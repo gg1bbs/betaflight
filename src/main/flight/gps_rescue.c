@@ -192,7 +192,6 @@ bool          magForceDisable = false;
 static bool newGPSData = false;
 
 rescueState_s rescueState;
-altitudeMode_e altitudeMode;
 throttle_s throttle;
 
 /*
@@ -332,7 +331,7 @@ static void rescueAttainPosition()
     const int16_t altitudeError = rescueState.intent.targetAltitudeCm - rescueState.sensor.currentAltitudeCm;
     
     // P component
-    if (ABS(altitudeError) > 0 && ABS(altitudeError) < GPS_RESCUE_ZVELOCITY_THRESHOLD){
+    if (ABS(altitudeError) > 0 && ABS(altitudeError) < GPS_RESCUE_ZVELOCITY_THRESHOLD) {
         scalingRate = (float)altitudeError / GPS_RESCUE_ZVELOCITY_THRESHOLD;
     } else {
         scalingRate = 1;
@@ -602,15 +601,16 @@ void updateGPSRescueState(void)
             newDescentDistanceM = gpsRescueConfig()->descentDistanceM;
         }
         
-        switch (altitudeMode) {
-            case MAX_ALT:
-                newAltitude = MAX(gpsRescueConfig()->initialAltitudeM * 100, rescueState.sensor.maxAltitudeCm + 1500);
-                break;
+        switch (gpsRescueConfig()->altitudeMode) {
             case FIXED_ALT:
                 newAltitude = gpsRescueConfig()->initialAltitudeM * 100;
                 break;
             case CURRENT_ALT:
                 newAltitude = rescueState.sensor.currentAltitudeCm;
+                break;
+            case MAX_ALT:
+            default:
+                newAltitude = MAX(gpsRescueConfig()->initialAltitudeM * 100, rescueState.sensor.maxAltitudeCm + 1500);
                 break;
         }
 
