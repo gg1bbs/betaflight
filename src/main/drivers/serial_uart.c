@@ -52,8 +52,8 @@
 #define UART_TX_BUFFER_ATTRIBUTE DMA_RAM_W          // SRAM MPU NOT_BUFFERABLE
 #define UART_RX_BUFFER_ATTRIBUTE DMA_RAM_R          // SRAM MPU NOT CACHABLE
 #elif defined(STM32F7)
-#define UART_TX_BUFFER_ATTRIBUTE FAST_RAM_ZERO_INIT // DTCM RAM
-#define UART_RX_BUFFER_ATTRIBUTE FAST_RAM_ZERO_INIT // DTCM RAM
+#define UART_TX_BUFFER_ATTRIBUTE FAST_DATA_ZERO_INIT // DTCM RAM
+#define UART_RX_BUFFER_ATTRIBUTE FAST_DATA_ZERO_INIT // DTCM RAM
 #elif defined(STM32F4) || defined(STM32F3) || defined(STM32F1)
 #define UART_TX_BUFFER_ATTRIBUTE                    // NONE
 #define UART_RX_BUFFER_ATTRIBUTE                    // NONE
@@ -97,19 +97,23 @@ UART_BUFFERS(7);
 UART_BUFFERS(8);
 #endif
 
+#ifdef USE_UART9
+UART_BUFFERS(9);
+#endif
+
 #undef UART_BUFFERS
 
 serialPort_t *uartOpen(UARTDevice_e device, serialReceiveCallbackPtr rxCallback, void *rxCallbackData, uint32_t baudRate, portMode_e mode, portOptions_e options)
-{   
+{
     uartPort_t *s = serialUART(device, baudRate, mode, options);
-    
+
     if (!s)
         return (serialPort_t *)s;
-    
+
 #ifdef USE_DMA
     s->txDMAEmpty = true;
 #endif
-    
+
     // common serial initialisation code should move to serialPort::init()
     s->port.rxBufferHead = s->port.rxBufferTail = 0;
     s->port.txBufferHead = s->port.txBufferTail = 0;
@@ -119,9 +123,9 @@ serialPort_t *uartOpen(UARTDevice_e device, serialReceiveCallbackPtr rxCallback,
     s->port.mode = mode;
     s->port.baudRate = baudRate;
     s->port.options = options;
-    
+
     uartReconfigure(s);
-    
+
     return (serialPort_t *)s;
 }
 
@@ -152,10 +156,12 @@ static uint32_t uartTotalRxBytesWaiting(const serialPort_t *instance)
         uint32_t rxDMAHead = xDMA_GetCurrDataCounter(s->rxDMAResource);
 #endif
 
-        if (rxDMAHead >= s->rxDMAPos) {
-            return rxDMAHead - s->rxDMAPos;
+        // s->rxDMAPos and rxDMAHead represent distances from the end
+        // of the buffer.  They count DOWN as they advance.
+        if (s->rxDMAPos >= rxDMAHead) {
+            return s->rxDMAPos - rxDMAHead;
         } else {
-            return s->port.rxBufferSize + rxDMAHead - s->rxDMAPos;
+            return s->port.rxBufferSize + s->rxDMAPos - rxDMAHead;
         }
     }
 #endif
@@ -342,43 +348,47 @@ void uartConfigureDma(uartDevice_t *uartdev)
 }
 #endif
 
-#define UART_IRQHandler(type, dev)                            \
-    void type ## dev ## _IRQHandler(void)                     \
+#define UART_IRQHandler(type, number, dev)                    \
+    void type ## number ## _IRQHandler(void)                  \
     {                                                         \
         uartPort_t *s = &(uartDevmap[UARTDEV_ ## dev]->port); \
         uartIrqHandler(s);                                    \
     }
 
 #ifdef USE_UART1
-UART_IRQHandler(USART, 1) // USART1 Rx/Tx IRQ Handler
+UART_IRQHandler(USART, 1, 1) // USART1 Rx/Tx IRQ Handler
 #endif
 
 #ifdef USE_UART2
-UART_IRQHandler(USART, 2) // USART2 Rx/Tx IRQ Handler
+UART_IRQHandler(USART, 2, 2) // USART2 Rx/Tx IRQ Handler
 #endif
 
 #ifdef USE_UART3
-UART_IRQHandler(USART, 3) // USART3 Rx/Tx IRQ Handler
+UART_IRQHandler(USART, 3, 3) // USART3 Rx/Tx IRQ Handler
 #endif
 
 #ifdef USE_UART4
-UART_IRQHandler(UART, 4)  // UART4 Rx/Tx IRQ Handler
+UART_IRQHandler(UART, 4, 4)  // UART4 Rx/Tx IRQ Handler
 #endif
 
 #ifdef USE_UART5
-UART_IRQHandler(UART, 5)  // UART5 Rx/Tx IRQ Handler
+UART_IRQHandler(UART, 5, 5)  // UART5 Rx/Tx IRQ Handler
 #endif
 
 #ifdef USE_UART6
-UART_IRQHandler(USART, 6) // USART6 Rx/Tx IRQ Handler
+UART_IRQHandler(USART, 6, 6) // USART6 Rx/Tx IRQ Handler
 #endif
 
 #ifdef USE_UART7
-UART_IRQHandler(UART, 7)  // UART7 Rx/Tx IRQ Handler
+UART_IRQHandler(UART, 7, 7)  // UART7 Rx/Tx IRQ Handler
 #endif
 
 #ifdef USE_UART8
-UART_IRQHandler(UART, 8)  // UART8 Rx/Tx IRQ Handler
+UART_IRQHandler(UART, 8, 8)  // UART8 Rx/Tx IRQ Handler
+#endif
+
+#ifdef USE_UART9
+UART_IRQHandler(LPUART, 1, 9) // UART9 (implemented with LPUART1) Rx/Tx IRQ Handler
 #endif
 
 #endif // USE_UART

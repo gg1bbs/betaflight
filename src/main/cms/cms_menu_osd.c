@@ -29,6 +29,8 @@
 
 #include "build/version.h"
 
+#include "cli/settings.h"
+
 #include "cms/cms.h"
 #include "cms/cms_types.h"
 #include "cms/cms_menu_osd.h"
@@ -36,26 +38,33 @@
 #include "common/utils.h"
 
 #include "config/feature.h"
-#include "pg/pg.h"
-#include "pg/pg_ids.h"
+
+#include "drivers/display.h"
 
 #include "io/displayport_max7456.h"
 
 #include "osd/osd.h"
 #include "osd/osd_elements.h"
+
+#include "pg/pg.h"
+#include "pg/pg_ids.h"
+
 #include "sensors/battery.h"
 
 #ifdef USE_EXTENDED_CMS_MENUS
 static uint16_t osdConfig_item_pos[OSD_ITEM_COUNT];
 
-static const void *menuOsdActiveElemsOnEnter(void)
+static const void *menuOsdActiveElemsOnEnter(displayPort_t *pDisp)
 {
+    UNUSED(pDisp);
+
     memcpy(&osdConfig_item_pos[0], &osdElementConfig()->item_pos[0], sizeof(uint16_t) * OSD_ITEM_COUNT);
     return NULL;
 }
 
-static const void *menuOsdActiveElemsOnExit(const OSD_Entry *self)
+static const void *menuOsdActiveElemsOnExit(displayPort_t *pDisp, const OSD_Entry *self)
 {
+    UNUSED(pDisp);
     UNUSED(self);
 
     memcpy(&osdElementConfigMutable()->item_pos[0], &osdConfig_item_pos[0], sizeof(uint16_t) * OSD_ITEM_COUNT);
@@ -73,6 +82,9 @@ const OSD_Entry menuOsdActiveElemsEntries[] =
     {"BATTERY VOLTAGE",    OME_VISIBLE, NULL, &osdConfig_item_pos[OSD_MAIN_BATT_VOLTAGE], DYNAMIC},
     {"BATTERY USAGE",      OME_VISIBLE, NULL, &osdConfig_item_pos[OSD_MAIN_BATT_USAGE], DYNAMIC},
     {"AVG CELL VOLTAGE",   OME_VISIBLE, NULL, &osdConfig_item_pos[OSD_AVG_CELL_VOLTAGE], DYNAMIC},
+#ifdef USE_GPS
+    {"BATTERY EFFICIENCY", OME_VISIBLE, NULL, &osdConfig_item_pos[OSD_EFFICIENCY], DYNAMIC},
+#endif // GPS
     {"CROSSHAIRS",         OME_VISIBLE, NULL, &osdConfig_item_pos[OSD_CROSSHAIRS], DYNAMIC},
     {"HORIZON",            OME_VISIBLE, NULL, &osdConfig_item_pos[OSD_ARTIFICIAL_HORIZON], DYNAMIC},
     {"HORIZON SIDEBARS",   OME_VISIBLE, NULL, &osdConfig_item_pos[OSD_HORIZON_SIDEBARS], DYNAMIC},
@@ -146,7 +158,10 @@ const OSD_Entry menuOsdActiveElemsEntries[] =
     {"STICK OVERLAY LEFT", OME_VISIBLE, NULL, &osdConfig_item_pos[OSD_STICK_OVERLAY_LEFT], DYNAMIC},
     {"STICK OVERLAY RIGHT",OME_VISIBLE, NULL, &osdConfig_item_pos[OSD_STICK_OVERLAY_RIGHT], DYNAMIC},
 #endif
-    {"DISPLAY NAME",       OME_VISIBLE, NULL, &osdConfig_item_pos[OSD_DISPLAY_NAME], 0},
+    {"DISPLAY NAME",       OME_VISIBLE, NULL, &osdConfig_item_pos[OSD_DISPLAY_NAME], DYNAMIC},
+    {"RC CHANNELS",        OME_VISIBLE, NULL, &osdConfig_item_pos[OSD_RC_CHANNELS], DYNAMIC},
+    {"CAMERA FRAME",       OME_VISIBLE, NULL, &osdConfig_item_pos[OSD_CAMERA_FRAME], DYNAMIC},
+    {"TOTAL FLIGHTS",      OME_VISIBLE, NULL, &osdConfig_item_pos[OSD_TOTAL_FLIGHTS], DYNAMIC},
     {"BACK",               OME_Back,    NULL, NULL, 0},
     {NULL,                 OME_END,     NULL, NULL, 0}
 };
@@ -171,8 +186,10 @@ static uint16_t osdConfig_distance_alarm;
 static uint8_t batteryConfig_vbatDurationForWarning;
 static uint8_t batteryConfig_vbatDurationForCritical;
 
-static const void *menuAlarmsOnEnter(void)
+static const void *menuAlarmsOnEnter(displayPort_t *pDisp)
 {
+    UNUSED(pDisp);
+
     osdConfig_rssi_alarm = osdConfig()->rssi_alarm;
     osdConfig_link_quality_alarm = osdConfig()->link_quality_alarm;
     osdConfig_rssi_dbm_alarm = osdConfig()->rssi_dbm_alarm;
@@ -185,8 +202,9 @@ static const void *menuAlarmsOnEnter(void)
     return NULL;
 }
 
-static const void *menuAlarmsOnExit(const OSD_Entry *self)
+static const void *menuAlarmsOnExit(displayPort_t *pDisp, const OSD_Entry *self)
 {
+    UNUSED(pDisp);
     UNUSED(self);
 
     osdConfigMutable()->rssi_alarm = osdConfig_rssi_alarm;
@@ -231,8 +249,10 @@ osd_timer_source_e timerSource[OSD_TIMER_COUNT];
 osd_timer_precision_e timerPrecision[OSD_TIMER_COUNT];
 uint8_t timerAlarm[OSD_TIMER_COUNT];
 
-static const void *menuTimersOnEnter(void)
+static const void *menuTimersOnEnter(displayPort_t *pDisp)
 {
+    UNUSED(pDisp);
+
     for (int i = 0; i < OSD_TIMER_COUNT; i++) {
         const uint16_t timer = osdConfig()->timers[i];
         timerSource[i] = OSD_TIMER_SRC(timer);
@@ -243,8 +263,9 @@ static const void *menuTimersOnEnter(void)
     return NULL;
 }
 
-static const void *menuTimersOnExit(const OSD_Entry *self)
+static const void *menuTimersOnExit(displayPort_t *pDisp, const OSD_Entry *self)
 {
+    UNUSED(pDisp);
     UNUSED(self);
 
     for (int i = 0; i < OSD_TIMER_COUNT; i++) {
@@ -291,8 +312,12 @@ static uint8_t displayPortProfileMax7456_whiteBrightness;
 static uint8_t osdConfig_osdProfileIndex;
 #endif
 
-static const void *cmsx_menuOsdOnEnter(void)
+static displayPortBackground_e osdMenuBackgroundType;
+
+static const void *cmsx_menuOsdOnEnter(displayPort_t *pDisp)
 {
+    UNUSED(pDisp);
+
 #ifdef USE_OSD_PROFILES
     osdConfig_osdProfileIndex = osdConfig()->osdProfileIndex;
 #endif
@@ -301,13 +326,15 @@ static const void *cmsx_menuOsdOnEnter(void)
     displayPortProfileMax7456_invert = displayPortProfileMax7456()->invert;
     displayPortProfileMax7456_blackBrightness = displayPortProfileMax7456()->blackBrightness;
     displayPortProfileMax7456_whiteBrightness = displayPortProfileMax7456()->whiteBrightness;
+    osdMenuBackgroundType = osdConfig()->cms_background_type;
 #endif
 
     return NULL;
 }
 
-static const void *cmsx_menuOsdOnExit(const OSD_Entry *self)
+static const void *cmsx_menuOsdOnExit(displayPort_t *pDisp, const OSD_Entry *self)
 {
+    UNUSED(pDisp);
     UNUSED(self);
 
 #ifdef USE_OSD_PROFILES
@@ -332,6 +359,14 @@ static const void *cmsx_max7456Update(displayPort_t *pDisp, const void *self)
 }
 #endif // USE_MAX7456
 
+static const void *cmsx_osdBackgroundUpdate(displayPort_t *pDisp, const void *self)
+{
+    UNUSED(self);
+    osdConfigMutable()->cms_background_type = osdMenuBackgroundType;
+    displaySetBackgroundType(pDisp, osdMenuBackgroundType);
+    return NULL;
+}
+
 const OSD_Entry cmsx_menuOsdEntries[] =
 {
     {"---OSD---",   OME_Label,   NULL,          NULL,                0},
@@ -348,6 +383,7 @@ const OSD_Entry cmsx_menuOsdEntries[] =
     {"BRT BLACK", OME_UINT8, cmsx_max7456Update, &(OSD_UINT8_t){&displayPortProfileMax7456_blackBrightness, 0, 3, 1}, 0},
     {"BRT WHITE", OME_UINT8, cmsx_max7456Update, &(OSD_UINT8_t){&displayPortProfileMax7456_whiteBrightness, 0, 3, 1}, 0},
 #endif
+    {"BACKGROUND",OME_TAB,   cmsx_osdBackgroundUpdate, &(OSD_TAB_t){&osdMenuBackgroundType, DISPLAY_BACKGROUND_COUNT - 1, lookupTableCMSMenuBackgroundType}, 0},
     {"BACK", OME_Back, NULL, NULL, 0},
     {NULL,   OME_END,  NULL, NULL, 0}
 };

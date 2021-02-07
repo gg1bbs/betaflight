@@ -24,6 +24,7 @@
 #include "common/time.h"
 #include "common/filter.h"
 #include "common/axis.h"
+
 #include "pg/pg.h"
 
 #define MAX_PID_PROCESS_DENOM       16
@@ -34,6 +35,10 @@
 #define PIDSUM_LIMIT_YAW            400
 #define PIDSUM_LIMIT_MIN            100
 #define PIDSUM_LIMIT_MAX            1000
+
+#define PID_GAIN_MAX 200
+#define F_GAIN_MAX 2000
+#define D_MIN_GAIN_MAX 100
 
 // Scaling factors for Pids for better tunable range in configurator for betaflight pid controller. The scaling is based on legacy pid controller or previous float
 #define PTERM_SCALE 0.032029f
@@ -46,10 +51,21 @@
 
 // Full iterm suppression in setpoint mode at high-passed setpoint rate > 40deg/sec
 #define ITERM_RELAX_SETPOINT_THRESHOLD 40.0f
-#define ITERM_RELAX_CUTOFF_DEFAULT 20
+#define ITERM_RELAX_CUTOFF_DEFAULT 15
 
 // Anti gravity I constant
 #define AG_KI 21.586988f;
+
+#define ITERM_ACCELERATOR_GAIN_OFF 0
+#define ITERM_ACCELERATOR_GAIN_MAX 30000
+#define PID_ROLL_DEFAULT  { 42, 85, 35, 90 }
+#define PID_PITCH_DEFAULT { 46, 90, 38, 95 }
+#define PID_YAW_DEFAULT   { 45, 90,  0, 90 }
+#define D_MIN_DEFAULT     { 23, 25, 0 }
+
+#define DYN_LPF_DTERM_MIN_HZ_DEFAULT 70
+#define DYN_LPF_DTERM_MAX_HZ_DEFAULT 170
+#define DTERM_LOWPASS_2_HZ_DEFAULT 150
 
 typedef enum {
     PID_ROLL,
@@ -105,6 +121,14 @@ typedef enum {
     ITERM_RELAX_TYPE_COUNT,
 } itermRelaxType_e;
 
+typedef enum ffInterpolationType_e {
+    FF_INTERPOLATE_OFF,
+    FF_INTERPOLATE_ON,
+    FF_INTERPOLATE_AVG2,
+    FF_INTERPOLATE_AVG3,
+    FF_INTERPOLATE_AVG4
+} ffInterpolationType_t;
+
 #define MAX_PROFILE_NAME_LENGTH 8u
 
 typedef struct pidProfile_s {
@@ -138,7 +162,6 @@ typedef struct pidProfile_s {
     uint16_t crash_delay;                   // ms
     uint8_t crash_recovery_angle;           // degrees
     uint8_t crash_recovery_rate;            // degree/second
-    uint8_t vbatPidCompensation;            // Scale PIDsum to battery voltage
     uint8_t feedForwardTransition;          // Feed forward weight transition
     uint16_t crash_limit_yaw;               // limits yaw errorRate, so crashes don't cause huge throttle increase
     uint16_t itermLimit;
@@ -178,17 +201,30 @@ typedef struct pidProfile_s {
     uint8_t ff_boost;                       // amount of high-pass filtered FF to add to FF, 100 means 100% added
     char profileName[MAX_PROFILE_NAME_LENGTH + 1]; // Descriptive name for profile
 
-    uint8_t idle_min_rpm;                   // minimum motor speed enforced by integrating p controller
-    uint8_t idle_adjustment_speed;          // how quickly the integrating p controller tries to correct
-    uint8_t idle_p;                         // kP
-    uint8_t idle_pid_limit;                 // max P 
-    uint8_t idle_max_increase;              // max integrated correction
-    
+    uint8_t dyn_idle_min_rpm;                   // minimum motor speed enforced by the dynamic idle controller
+    uint8_t dyn_idle_p_gain;                // P gain during active control of rpm
+    uint8_t dyn_idle_i_gain;                // I gain during active control of rpm
+    uint8_t dyn_idle_d_gain;                // D gain for corrections around rapid changes in rpm
+    uint8_t dyn_idle_max_increase;          // limit on maximum possible increase in motor idle drive during active control
+
     uint8_t ff_interpolate_sp;              // Calculate FF from interpolated setpoint
     uint8_t ff_max_rate_limit;              // Maximum setpoint rate percentage for FF
-    uint8_t ff_spike_limit;                 // FF stick extrapolation lookahead period in ms
     uint8_t ff_smooth_factor;               // Amount of smoothing for interpolated FF steps
     uint8_t dyn_lpf_curve_expo;             // set the curve for dynamic dterm lowpass filter
+    uint8_t level_race_mode;                // NFE race mode - when true pitch setpoint calcualtion is gyro based in level mode
+    uint8_t vbat_sag_compensation;          // Reduce motor output by this percentage of the maximum compensation amount
+
+    uint8_t simplified_pids_mode;
+    uint8_t simplified_master_multiplier;
+    uint8_t simplified_roll_pitch_ratio;
+    uint8_t simplified_i_gain;
+    uint8_t simplified_pd_ratio;
+    uint8_t simplified_pd_gain;
+    uint8_t simplified_dmin_ratio;
+    uint8_t simplified_ff_gain;
+
+    uint8_t simplified_dterm_filter;
+    uint8_t simplified_dterm_filter_multiplier;
 } pidProfile_t;
 
 PG_DECLARE_ARRAY(pidProfile_t, PID_PROFILE_COUNT, pidProfiles);
@@ -214,6 +250,147 @@ typedef struct pidAxisData_s {
     float Sum;
 } pidAxisData_t;
 
+typedef union dtermLowpass_u {
+    pt1Filter_t pt1Filter;
+    biquadFilter_t biquadFilter;
+} dtermLowpass_t;
+
+typedef struct pidCoefficient_s {
+    float Kp;
+    float Ki;
+    float Kd;
+    float Kf;
+} pidCoefficient_t;
+
+typedef struct pidRuntime_s {
+    float dT;
+    float pidFrequency;
+    bool pidStabilisationEnabled;
+    float previousPidSetpoint[XYZ_AXIS_COUNT];
+    filterApplyFnPtr dtermNotchApplyFn;
+    biquadFilter_t dtermNotch[XYZ_AXIS_COUNT];
+    filterApplyFnPtr dtermLowpassApplyFn;
+    dtermLowpass_t dtermLowpass[XYZ_AXIS_COUNT];
+    filterApplyFnPtr dtermLowpass2ApplyFn;
+    dtermLowpass_t dtermLowpass2[XYZ_AXIS_COUNT];
+    filterApplyFnPtr ptermYawLowpassApplyFn;
+    pt1Filter_t ptermYawLowpass;
+    bool antiGravityEnabled;
+    uint8_t antiGravityMode;
+    pt1Filter_t antiGravityThrottleLpf;
+    pt1Filter_t antiGravitySmoothLpf;
+    float antiGravityOsdCutoff;
+    float antiGravityThrottleHpf;
+    float antiGravityPBoost;
+    float ffBoostFactor;
+    float itermAccelerator;
+    uint16_t itermAcceleratorGain;
+    float feedForwardTransition;
+    pidCoefficient_t pidCoefficient[XYZ_AXIS_COUNT];
+    float levelGain;
+    float horizonGain;
+    float horizonTransition;
+    float horizonCutoffDegrees;
+    float horizonFactorRatio;
+    uint8_t horizonTiltExpertMode;
+    float maxVelocity[XYZ_AXIS_COUNT];
+    float itermWindupPointInv;
+    bool inCrashRecoveryMode;
+    timeUs_t crashDetectedAtUs;
+    timeDelta_t crashTimeLimitUs;
+    timeDelta_t crashTimeDelayUs;
+    int32_t crashRecoveryAngleDeciDegrees;
+    float crashRecoveryRate;
+    float crashGyroThreshold;
+    float crashDtermThreshold;
+    float crashSetpointThreshold;
+    float crashLimitYaw;
+    float itermLimit;
+    bool itermRotation;
+    bool zeroThrottleItermReset;
+    bool levelRaceMode;
+
+#ifdef USE_ITERM_RELAX
+    pt1Filter_t windupLpf[XYZ_AXIS_COUNT];
+    uint8_t itermRelax;
+    uint8_t itermRelaxType;
+    uint8_t itermRelaxCutoff;
+#endif
+
+#ifdef USE_ABSOLUTE_CONTROL
+    float acCutoff;
+    float acGain;
+    float acLimit;
+    float acErrorLimit;
+    pt1Filter_t acLpf[XYZ_AXIS_COUNT];
+    float oldSetpointCorrection[XYZ_AXIS_COUNT];
+#endif
+
+#ifdef USE_D_MIN
+    biquadFilter_t dMinRange[XYZ_AXIS_COUNT];
+    pt1Filter_t dMinLowpass[XYZ_AXIS_COUNT];
+    float dMinPercent[XYZ_AXIS_COUNT];
+    float dMinGyroGain;
+    float dMinSetpointGain;
+#endif
+
+#ifdef USE_AIRMODE_LPF
+    pt1Filter_t airmodeThrottleLpf1;
+    pt1Filter_t airmodeThrottleLpf2;
+#endif
+
+#ifdef USE_RC_SMOOTHING_FILTER
+    pt1Filter_t setpointDerivativePt1[XYZ_AXIS_COUNT];
+    biquadFilter_t setpointDerivativeBiquad[XYZ_AXIS_COUNT];
+    bool setpointDerivativeLpfInitialized;
+    uint8_t rcSmoothingDebugAxis;
+    uint8_t rcSmoothingFilterType;
+#endif // USE_RC_SMOOTHING_FILTER
+
+#ifdef USE_ACRO_TRAINER
+    float acroTrainerAngleLimit;
+    float acroTrainerLookaheadTime;
+    uint8_t acroTrainerDebugAxis;
+    float acroTrainerGain;
+    bool acroTrainerActive;
+    int acroTrainerAxisState[2];  // only need roll and pitch
+#endif
+
+#ifdef USE_DYN_LPF
+    uint8_t dynLpfFilter;
+    uint16_t dynLpfMin;
+    uint16_t dynLpfMax;
+    uint8_t dynLpfCurveExpo;
+#endif
+
+#ifdef USE_LAUNCH_CONTROL
+    uint8_t launchControlMode;
+    uint8_t launchControlAngleLimit;
+    float launchControlKi;
+#endif
+
+#ifdef USE_INTEGRATED_YAW_CONTROL
+    bool useIntegratedYaw;
+    uint8_t integratedYawRelax;
+#endif
+
+#ifdef USE_THRUST_LINEARIZATION
+    float thrustLinearization;
+    float throttleCompensateAmount;
+#endif
+
+#ifdef USE_AIRMODE_LPF
+    float airmodeThrottleOffsetLimit;
+#endif
+
+#ifdef USE_INTERPOLATED_SP
+    ffInterpolationType_t ffFromInterpolatedSetpoint;
+    float ffSmoothFactor;
+#endif
+} pidRuntime_t;
+
+extern pidRuntime_t pidRuntime;
+
 extern const char pidNames[];
 
 extern pidAxisData_t pidData[3];
@@ -226,24 +403,20 @@ extern pt1Filter_t throttleLpf;
 void pidResetIterm(void);
 void pidStabilisationState(pidStabilisationState_e pidControllerState);
 void pidSetItermAccelerator(float newItermAccelerator);
-void pidInitFilters(const pidProfile_t *pidProfile);
-void pidInitConfig(const pidProfile_t *pidProfile);
-void pidInit(const pidProfile_t *pidProfile);
-void pidCopyProfile(uint8_t dstPidProfileIndex, uint8_t srcPidProfileIndex);
 bool crashRecoveryModeActive(void);
 void pidAcroTrainerInit(void);
 void pidSetAcroTrainerState(bool newState);
-void pidInitSetpointDerivativeLpf(uint16_t filterCutoff, uint8_t debugAxis, uint8_t filterType);
-void pidUpdateSetpointDerivativeLpf(uint16_t filterCutoff);
 void pidUpdateAntiGravityThrottleFilter(float throttle);
 bool pidOsdAntiGravityActive(void);
 bool pidOsdAntiGravityMode(void);
 void pidSetAntiGravityState(bool newState);
 bool pidAntiGravityEnabled(void);
+
 #ifdef USE_THRUST_LINEARIZATION
 float pidApplyThrustLinearization(float motorValue);
 float pidCompensateThrustLinearization(float throttle);
 #endif
+
 #ifdef USE_AIRMODE_LPF
 void pidUpdateAirmodeLpf(float currentOffset);
 float pidGetAirmodeThrottleOffset();
@@ -267,5 +440,4 @@ float pidGetDT();
 float pidGetPidFrequency();
 float pidGetFfBoostFactor();
 float pidGetFfSmoothFactor();
-float pidGetSpikeLimitInverse();
-float dynDtermLpfCutoffFreq(float throttle, uint16_t dynLpfMin, uint16_t dynLpfMax, uint8_t expo);
+float dynLpfCutoffFreq(float throttle, uint16_t dynLpfMin, uint16_t dynLpfMax, uint8_t expo);

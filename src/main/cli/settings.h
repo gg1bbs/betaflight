@@ -41,6 +41,7 @@ typedef enum {
 #ifdef USE_BLACKBOX
     TABLE_BLACKBOX_DEVICE,
     TABLE_BLACKBOX_MODE,
+    TABLE_BLACKBOX_SAMPLE_RATE,
 #endif
     TABLE_CURRENT_METER,
     TABLE_VOLTAGE_METER,
@@ -98,9 +99,9 @@ typedef enum {
     TABLE_GYRO,
 #endif
     TABLE_THROTTLE_LIMIT_TYPE,
-#ifdef USE_MAX7456
+#if defined(USE_MAX7456) || defined(USE_FRSKYOSD)
     TABLE_VIDEO_SYSTEM,
-#endif // USE_MAX7456
+#endif
 #if defined(USE_ITERM_RELAX)
     TABLE_ITERM_RELAX,
     TABLE_ITERM_RELAX_TYPE,
@@ -140,7 +141,11 @@ typedef enum {
 #ifdef USE_OSD
     TABLE_OSD_LOGO_ON_ARMING,
 #endif
-
+    TABLE_MIXER_TYPE,
+    TABLE_SIMPLIFIED_TUNING_PIDS_MODE,
+#ifdef USE_OSD
+    TABLE_CMS_BACKGROUND,
+#endif
     LOOKUP_TABLE_COUNT
 } lookupTableIndex_e;
 
@@ -256,3 +261,11 @@ extern const char * const lookupTableItermRelax[];
 extern const char * const lookupTableItermRelaxType[];
 
 extern const char * const lookupTableOsdDisplayPortDevice[];
+
+extern const char * const lookupTableInterpolatedSetpoint[];
+
+extern const char * const lookupTableOffOn[];
+
+extern const char * const lookupTableSimplifiedTuningPidsMode[];
+
+extern const char * const lookupTableCMSMenuBackgroundType[];

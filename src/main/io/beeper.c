@@ -241,7 +241,7 @@ void beeper(beeperMode_e mode)
         mode == BEEPER_SILENCE || (
             (beeperConfig()->beeper_off_flags & BEEPER_GET_FLAG(BEEPER_USB))
             && getBatteryState() == BATTERY_NOT_PRESENT
-        )
+        ) || IS_RC_MODE_ACTIVE(BOXBEEPERMUTE)
     ) {
         beeperSilence();
         return;
@@ -401,7 +401,7 @@ void beeperUpdate(timeUs_t currentTimeUs)
 
             if ((currentTimeUs - getLastDisarmTimeUs() > DSHOT_BEACON_GUARD_DELAY_US) && !isTryingToArm()) {
                 lastDshotBeaconCommandTimeUs = currentTimeUs;
-                dshotCommandWrite(ALL_MOTORS, getMotorCount(), beeperConfig()->dshotBeaconTone, false);
+                dshotCommandWrite(ALL_MOTORS, getMotorCount(), beeperConfig()->dshotBeaconTone, DSHOT_CMD_TYPE_INLINE);
             }
         }
 #endif

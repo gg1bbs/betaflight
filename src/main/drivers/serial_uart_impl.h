@@ -47,7 +47,11 @@
 #define UART_RX_BUFFER_SIZE     128
 #endif
 #ifndef UART_TX_BUFFER_SIZE
+#ifdef USE_MSP_DISPLAYPORT
+#define UART_TX_BUFFER_SIZE     1280
+#else
 #define UART_TX_BUFFER_SIZE     256
+#endif
 #endif
 #elif defined(STM32F7)
 #define UARTDEV_COUNT_MAX 8
@@ -56,7 +60,11 @@
 #define UART_RX_BUFFER_SIZE     128
 #endif
 #ifndef UART_TX_BUFFER_SIZE
+#ifdef USE_MSP_DISPLAYPORT
+#define UART_TX_BUFFER_SIZE     1280
+#else
 #define UART_TX_BUFFER_SIZE     256
+#endif
 #endif
 #elif defined(STM32H7)
 #define UARTDEV_COUNT_MAX 8
@@ -65,16 +73,24 @@
 #define UART_RX_BUFFER_SIZE     128
 #endif
 #ifndef UART_TX_BUFFER_SIZE
+#ifdef USE_MSP_DISPLAYPORT
+#define UART_TX_BUFFER_SIZE     1280
+#else
 #define UART_TX_BUFFER_SIZE     256
 #endif
+#endif
 #elif defined(STM32G4)
-#define UARTDEV_COUNT_MAX 6
+#define UARTDEV_COUNT_MAX 9  // UART1~5 + UART9 (Implemented with LPUART1)
 #define UARTHARDWARE_MAX_PINS 3
 #ifndef UART_RX_BUFFER_SIZE
 #define UART_RX_BUFFER_SIZE     128
 #endif
 #ifndef UART_TX_BUFFER_SIZE
+#ifdef USE_MSP_DISPLAYPORT
+#define UART_TX_BUFFER_SIZE     1280
+#else
 #define UART_TX_BUFFER_SIZE     256
+#endif
 #endif
 #else
 #error unknown MCU family
@@ -130,7 +146,13 @@
 #define UARTDEV_COUNT_8 0
 #endif
 
-#define UARTDEV_COUNT (UARTDEV_COUNT_1 + UARTDEV_COUNT_2 + UARTDEV_COUNT_3 + UARTDEV_COUNT_4 + UARTDEV_COUNT_5 + UARTDEV_COUNT_6 + UARTDEV_COUNT_7 + UARTDEV_COUNT_8)
+#ifdef USE_UART9
+#define UARTDEV_COUNT_9 1
+#else
+#define UARTDEV_COUNT_9 0
+#endif
+
+#define UARTDEV_COUNT (UARTDEV_COUNT_1 + UARTDEV_COUNT_2 + UARTDEV_COUNT_3 + UARTDEV_COUNT_4 + UARTDEV_COUNT_5 + UARTDEV_COUNT_6 + UARTDEV_COUNT_7 + UARTDEV_COUNT_8 + UARTDEV_COUNT_9)
 
 typedef struct uartPinDef_s {
     ioTag_t pin;
@@ -155,13 +177,7 @@ typedef struct uartHardware_s {
     uartPinDef_t rxPins[UARTHARDWARE_MAX_PINS];
     uartPinDef_t txPins[UARTHARDWARE_MAX_PINS];
 
-#if defined(STM32F7) || defined(STM32H7) || defined(STM32G4)
-    uint32_t rcc_ahb1;
-    rccPeriphTag_t rcc_apb2;
-    rccPeriphTag_t rcc_apb1;
-#else
     rccPeriphTag_t rcc;
-#endif
 
 #if !defined(STM32F7)
     uint8_t af;
@@ -256,6 +272,10 @@ UART_BUFFERS_EXTERN(7);
 
 #ifdef USE_UART8
 UART_BUFFERS_EXTERN(8);
+#endif
+
+#ifdef USE_UART9
+UART_BUFFERS_EXTERN(9);
 #endif
 
 #undef UART_BUFFERS_EXTERN

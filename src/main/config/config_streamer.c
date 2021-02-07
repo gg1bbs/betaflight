@@ -70,11 +70,12 @@ uint8_t eepromData[EEPROM_SIZE];
 # elif defined(UNIT_TEST)
 #  define FLASH_PAGE_SIZE                 (0x400)
 // H7
-# elif defined(STM32H743xx) || defined(STM32H750xx)
+# elif defined(STM32H743xx) || defined(STM32H750xx) || defined(STM32H723xx) || defined(STM32H725xx)
 #  define FLASH_PAGE_SIZE                 ((uint32_t)0x20000) // 128K sectors
+# elif defined(STM32H7A3xx) || defined(STM32H7A3xxQ)
+#  define FLASH_PAGE_SIZE                 ((uint32_t)0x2000) // 8K sectors
+// G4
 # elif defined(STM32G4)
-   // G4 V1.0.0 library forces us to use dual bank mode
-   // 2 bank * 128 page/bank * 2KB/page
 #  define FLASH_PAGE_SIZE                 ((uint32_t)0x800) // 2K page
 // SIMULATOR
 # elif defined(SIMULATOR_BUILD)
@@ -273,64 +274,69 @@ static uint32_t getFLASHSectorForEEPROM(void)
     }
 }
 
-#elif defined(STM32H743xx)
+#elif defined(STM32H743xx) || defined(STM32G4) || defined(STM32H7A3xx) || defined(STM32H7A3xxQ) || defined(STM32H723xx) || defined(STM32H725xx)
 /*
-There are two banks of 8 of 128K sectors (up to 2MB flash)
+MCUs with uniform array of equal size sectors, handled in two banks having contiguous address.
+(Devices with non-contiguous flash layout is not currently useful anyways.)
 
-Bank 1
-Sector 0    0x08000000 - 0x0801FFFF 128 Kbytes
-Sector 1    0x08020000 - 0x0803FFFF 128 Kbytes
-Sector 2    0x08040000 - 0x0805FFFF 128 Kbytes
-Sector 3    0x08060000 - 0x0807FFFF 128 Kbytes
-Sector 4    0x08080000 - 0x0809FFFF 128 Kbytes
-Sector 5    0x080A0000 - 0x080BFFFF 128 Kbytes
-Sector 6    0x080C0000 - 0x080DFFFF 128 Kbytes
-Sector 7    0x080E0000 - 0x080FFFFF 128 Kbytes
+H743
+2 bank * 8 sector/bank * 128K/sector (2MB)
+Bank 1 0x08000000 - 0x080FFFFF 128KB * 8
+Bank 2 0x08100000 - 0x081FFFFF 128KB * 8
 
-Bank 2
-Sector 0    0x08100000 - 0x0811FFFF 128 Kbytes
-Sector 1    0x08120000 - 0x0813FFFF 128 Kbytes
-Sector 2    0x08140000 - 0x0815FFFF 128 Kbytes
-Sector 3    0x08160000 - 0x0817FFFF 128 Kbytes
-Sector 4    0x08180000 - 0x0819FFFF 128 Kbytes
-Sector 5    0x081A0000 - 0x081BFFFF 128 Kbytes
-Sector 6    0x081C0000 - 0x081DFFFF 128 Kbytes
-Sector 7    0x081E0000 - 0x081FFFFF 128 Kbytes
+H743
+1 bank * 8 sector/bank * 128K/sector (1MB)
+Bank 1 0x08000000 - 0x080FFFFF 128KB * 8
 
+H7A3
+2 bank * 128 sector/bank * 8KB/sector (2MB)
+Bank 1 0x08000000 - 0x080FFFFF 8KB * 128
+Bank 2 0x08100000 - 0x081FFFFF 8KB * 128
+
+G473/474 in dual bank mode
+2 bank * 128 sector/bank * 2KB/sector (512KB)
+Bank 1 0x08000000 - 0x0803FFFF 2KB * 128
+Bank 2 0x08040000 - 0x0807FFFF 2KB * 128
+
+Note that FLASH_BANK_SIZE constant used in the following code changes depending on
+bank operation mode. The code assumes dual bank operation, in which case the
+FLASH_BANK_SIZE constant is set to one half of the available flash size in HAL.
 */
 
-static void getFLASHSectorForEEPROM(uint32_t *bank, uint32_t *sector)
-{
-    uint32_t start = (uint32_t)&__config_start;
+#if defined(STM32H743xx) || defined(STM32H723xx) || defined(STM32H725xx)
+#define FLASH_PAGE_PER_BANK 8
+#elif defined(STM32H7A3xx) || defined(STM32H7A3xxQ)
+#define FLASH_PAGE_PER_BANK 128
+#elif defined(STM32G4)
+#define FLASH_PAGE_PER_BANK 128
+// These are not defined in CMSIS like H7
+#define FLASH_BANK1_BASE FLASH_BASE
+#define FLASH_BANK2_BASE (FLASH_BANK1_BASE + FLASH_BANK_SIZE)
+#endif
 
-    if (start >= FLASH_BANK1_BASE && start < FLASH_BANK2_BASE) {
+static void getFLASHSectorForEEPROM(uint32_t address, uint32_t *bank, uint32_t *sector)
+{
+#if defined(FLASH_BANK2_BASE)
+    if (address >= FLASH_BANK1_BASE && address < FLASH_BANK2_BASE) {
         *bank = FLASH_BANK_1;
-    } else if (start >= FLASH_BANK2_BASE && start < FLASH_BANK2_BASE + 0x100000) {
+    } else if (address >= FLASH_BANK2_BASE && address < FLASH_BANK2_BASE + FLASH_BANK_SIZE) {
         *bank = FLASH_BANK_2;
-        start -= 0x100000;
-    } else {
+        address -= FLASH_BANK_SIZE;
+    }
+#else
+    if (address >= FLASH_BANK1_BASE && address < FLASH_BANK1_BASE + FLASH_BANK_SIZE) {
+        *bank = FLASH_BANK_1;
+    }
+#endif
+    else {
         // Not good
         while (1) {
             failureMode(FAILURE_CONFIG_STORE_FAILURE);
         }
     }
 
-    if (start <= 0x0801FFFF)
-        *sector = FLASH_SECTOR_0;
-    else if (start <= 0x0803FFFF)
-        *sector = FLASH_SECTOR_1;
-    else if (start <= 0x0805FFFF)
-        *sector = FLASH_SECTOR_2;
-    else if (start <= 0x0807FFFF)
-        *sector = FLASH_SECTOR_3;
-    else if (start <= 0x0809FFFF)
-        *sector = FLASH_SECTOR_4;
-    else if (start <= 0x080BFFFF)
-        *sector = FLASH_SECTOR_5;
-    else if (start <= 0x080DFFFF)
-        *sector = FLASH_SECTOR_6;
-    else if (start <= 0x080FFFFF)
-        *sector = FLASH_SECTOR_7;
+    address -= FLASH_BANK1_BASE;
+    *sector = address / FLASH_PAGE_SIZE;
 }
 #elif defined(STM32H750xx)
 /*
@@ -357,28 +363,8 @@ static void getFLASHSectorForEEPROM(uint32_t *bank, uint32_t *sector)
         }
     }
 }
-#elif defined(STM32G4)
-/*
-The G4 V1.0.0 HAL library forces dual bank mode: 2 bank * 128 page/bank * 2KB/page
-*/
-#define FLASH_BANK_SIZE_G4 (128 * 2048)
-#define FLASH_BANK1_BASE 0x08000000
-#define FLASH_BANK2_BASE (FLASH_BANK1_BASE + FLASH_BANK_SIZE_G4)
-
-static void getFLASHSectorForEEPROM(uint32_t address, uint32_t *bank, uint32_t *page)
-{
-    if (address < FLASH_BANK2_BASE) {
-        *bank = FLASH_BANK_1;
-        address -= FLASH_BANK1_BASE;
-    } else {
-        *bank = FLASH_BANK_2;
-        address -= FLASH_BANK2_BASE;
-    }
-
-    *page = address / FLASH_PAGE_SIZE;
-}
 #endif
-#endif
+#endif // CONFIG_IN_FLASH
 
 // FIXME the return values are currently magic numbers
 static int write_word(config_streamer_t *c, config_streamer_buffer_align_type_t *buffer)
@@ -454,10 +440,12 @@ static int write_word(config_streamer_t *c, config_streamer_buffer_align_type_t 
     if (c->address % FLASH_PAGE_SIZE == 0) {
         FLASH_EraseInitTypeDef EraseInitStruct = {
             .TypeErase     = FLASH_TYPEERASE_SECTORS,
+#if !(defined(STM32H7A3xx) || defined(STM32H7A3xxQ))
             .VoltageRange  = FLASH_VOLTAGE_RANGE_3, // 2.7-3.6V
+#endif
             .NbSectors     = 1
         };
-        getFLASHSectorForEEPROM(&EraseInitStruct.Banks, &EraseInitStruct.Sector);
+        getFLASHSectorForEEPROM(c->address, &EraseInitStruct.Banks, &EraseInitStruct.Sector);
         uint32_t SECTORError;
         const HAL_StatusTypeDef status = HAL_FLASHEx_Erase(&EraseInitStruct, &SECTORError);
         if (status != HAL_OK) {

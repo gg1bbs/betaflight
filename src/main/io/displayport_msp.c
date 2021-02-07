@@ -27,6 +27,8 @@
 
 #ifdef USE_MSP_DISPLAYPORT
 
+#include "cli/cli.h"
+
 #include "common/utils.h"
 
 #include "drivers/display.h"
@@ -38,10 +40,6 @@
 #include "msp/msp_serial.h"
 
 static displayPort_t mspDisplayPort;
-
-#ifdef USE_CLI
-extern uint8_t cliMode;
-#endif
 
 static int output(displayPort_t *displayPort, uint8_t cmd, uint8_t *buf, int len)
 {
@@ -141,7 +139,7 @@ static bool isSynced(const displayPort_t *displayPort)
     return true;
 }
 
-static void resync(displayPort_t *displayPort)
+static void redraw(displayPort_t *displayPort)
 {
     displayPort->rows = 13 + displayPortProfileMsp()->rowAdjust; // XXX Will reflect NTSC/PAL in the future
     displayPort->cols = 30 + displayPortProfileMsp()->colAdjust;
@@ -164,7 +162,7 @@ static const displayPortVTable_t mspDisplayPortVTable = {
     .writeChar = writeChar,
     .isTransferInProgress = isTransferInProgress,
     .heartbeat = heartbeat,
-    .resync = resync,
+    .redraw = redraw,
     .isSynced = isSynced,
     .txBytesFree = txBytesFree,
     .layerSupported = NULL,
@@ -174,28 +172,13 @@ static const displayPortVTable_t mspDisplayPortVTable = {
 
 displayPort_t *displayPortMspInit(void)
 {
-#ifdef USE_DISPLAYPORT_MSP_VENDOR_SPECIFIC
-    // XXX Should handle the case that a device starts to listen after the init string is sent
-    // XXX 1. Send the init string periodically while not armed.
-    // XXX 2. Send the init string in response to device identification message from a device.
-
-    // Send vendor specific initialization string.
-    // The string start with subcommand code.
-
-    int initLength = displayPortProfileMsp()->vendorInitLength;
-
-    if (initLength) {
-        output(&mspDisplayPort, MSP_DISPLAYPORT, (uint8_t *)displayPortProfileMsp()->vendorInit, initLength);
-    }
-#endif
-
     displayInit(&mspDisplayPort, &mspDisplayPortVTable);
 
     if (displayPortProfileMsp()->useDeviceBlink) {
         mspDisplayPort.useDeviceBlink = true;
     }
 
-    resync(&mspDisplayPort);
+    redraw(&mspDisplayPort);
     return &mspDisplayPort;
 }
 #endif // USE_MSP_DISPLAYPORT

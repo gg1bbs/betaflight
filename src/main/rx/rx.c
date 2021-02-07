@@ -33,15 +33,14 @@
 #include "common/utils.h"
 #include "common/filter.h"
 
+#include "config/config.h"
 #include "config/config_reset.h"
 #include "config/feature.h"
 
 #include "drivers/adc.h"
 #include "drivers/rx/rx_pwm.h"
-#include "drivers/rx/rx_spi.h"
 #include "drivers/time.h"
 
-#include "config/config.h"
 #include "fc/rc_controls.h"
 #include "fc/rc_modes.h"
 
@@ -66,20 +65,23 @@
 #include "rx/ibus.h"
 #include "rx/jetiexbus.h"
 #include "rx/crsf.h"
+#include "rx/ghst.h"
 #include "rx/rx_spi.h"
 #include "rx/targetcustomserial.h"
+#include "rx/msp_override.h"
 
 
 const char rcChannelLetters[] = "AERT12345678abcdefgh";
 
 static uint16_t rssi = 0;                  // range: [0;1023]
-static uint8_t rssi_dbm = 130;             // range: [0;130] display 0 to -130
+static int16_t rssiDbm = CRSF_RSSI_MIN;    // range: [-130,20]
 static timeUs_t lastMspRssiUpdateUs = 0;
 
 static pt1Filter_t frameErrFilter;
 
 #ifdef USE_RX_LINK_QUALITY_INFO
 static uint16_t linkQuality = 0;
+static uint8_t rfMode = 0;
 #endif
 
 #define MSP_RSSI_TIMEOUT_US 1500000   // 1.5 sec
@@ -230,6 +232,11 @@ static bool serialRxInit(const rxConfig_t *rxConfig, rxRuntimeState_t *rxRuntime
 #ifdef USE_SERIALRX_CRSF
     case SERIALRX_CRSF:
         enabled = crsfRxInit(rxConfig, rxRuntimeState);
+        break;
+#endif
+#ifdef USE_SERIALRX_GHST
+    case SERIALRX_GHST:
+        enabled = ghstRxInit(rxConfig, rxRuntimeState);
         break;
 #endif
 #ifdef USE_SERIALRX_TARGET_CUSTOM
@@ -404,31 +411,36 @@ STATIC_UNIT_TESTED uint16_t updateLinkQualitySamples(uint16_t value)
     sampleIndex = (sampleIndex + 1) % LINK_QUALITY_SAMPLE_COUNT;
     return sum / LINK_QUALITY_SAMPLE_COUNT;
 }
+
+void rxSetRfMode(uint8_t rfModeValue)
+{
+    rfMode = rfModeValue;
+}
 #endif
 
-static void setLinkQuality(bool validFrame, timeDelta_t currentDeltaTime)
+static void setLinkQuality(bool validFrame, timeDelta_t currentDeltaTimeUs)
 {
+    static uint16_t rssiSum = 0;
+    static uint16_t rssiCount = 0;
+    static timeDelta_t resampleTimeUs = 0;
+
 #ifdef USE_RX_LINK_QUALITY_INFO
-    if (linkQualitySource != LQ_SOURCE_RX_PROTOCOL_CRSF) {
+    if (linkQualitySource == LQ_SOURCE_NONE) {
         // calculate new sample mean
         linkQuality = updateLinkQualitySamples(validFrame ? LINK_QUALITY_MAX_VALUE : 0);
     }
 #endif
 
     if (rssiSource == RSSI_SOURCE_FRAME_ERRORS) {
-        static uint16_t tot_rssi = 0;
-        static uint16_t cnt_rssi = 0;
-        static timeDelta_t resample_time = 0;
+        resampleTimeUs += currentDeltaTimeUs;
+        rssiSum += validFrame ? RSSI_MAX_VALUE : 0;
+        rssiCount++;
 
-        resample_time += currentDeltaTime;
-        tot_rssi += validFrame ? RSSI_MAX_VALUE : 0;
-        cnt_rssi++;
-
-        if (resample_time >= FRAME_ERR_RESAMPLE_US) {
-            setRssi(tot_rssi / cnt_rssi, rssiSource);
-            tot_rssi = 0;
-            cnt_rssi = 0;
-            resample_time -= FRAME_ERR_RESAMPLE_US;
+        if (resampleTimeUs >= FRAME_ERR_RESAMPLE_US) {
+            setRssi(rssiSum / rssiCount, rssiSource);
+            rssiSum = 0;
+            rssiCount = 0;
+            resampleTimeUs -= FRAME_ERR_RESAMPLE_US;
         }
     }
 }
@@ -442,7 +454,7 @@ void setLinkQualityDirect(uint16_t linkqualityValue)
 #endif
 }
 
-bool rxUpdateCheck(timeUs_t currentTimeUs, timeDelta_t currentDeltaTime)
+bool rxUpdateCheck(timeUs_t currentTimeUs, timeDelta_t currentDeltaTimeUs)
 {
     bool signalReceived = false;
     bool useDataDrivenProcessing = true;
@@ -484,7 +496,7 @@ bool rxUpdateCheck(timeUs_t currentTimeUs, timeDelta_t currentDeltaTime)
                     needRxSignalBefore = currentTimeUs + needRxSignalMaxDelayUs;
                 }
 
-                setLinkQuality(signalReceived, currentDeltaTime);
+                setLinkQuality(signalReceived, currentDeltaTimeUs);
             }
 
             if (frameStatus & RX_FRAME_PROCESSING_REQUIRED) {
@@ -586,7 +598,15 @@ static void readRxChannelsApplyRanges(void)
         const uint8_t rawChannel = channel < RX_MAPPABLE_CHANNEL_COUNT ? rxConfig()->rcmap[channel] : channel;
 
         // sample the channel
-        uint16_t sample = rxRuntimeState.rcReadRawFn(&rxRuntimeState, rawChannel);
+        uint16_t sample;
+#if defined(USE_RX_MSP_OVERRIDE)
+        if (rxConfig()->msp_override_channels_mask) {
+            sample = rxMspOverrideReadRawRc(&rxRuntimeState, rxConfig(), rawChannel);
+        } else
+#endif
+        {
+            sample = rxRuntimeState.rcReadRawFn(&rxRuntimeState, rawChannel);
+        }
 
         // apply the rx calibration
         if (channel < NON_AUX_CHANNEL_COUNT) {
@@ -742,13 +762,8 @@ static void updateRSSIPWM(void)
     // Read value of AUX channel as rssi
     int16_t pwmRssi = rcData[rxConfig()->rssi_channel - 1];
 
-    // RSSI_Invert option
-    if (rxConfig()->rssi_invert) {
-        pwmRssi = ((2000 - pwmRssi) + 1000);
-    }
-
     // Range of rawPwmRssi is [1000;2000]. rssi should be in [0;1023];
-    setRssiDirect(constrain(((pwmRssi - 1000) / 1000.0f) * RSSI_MAX_VALUE, 0, RSSI_MAX_VALUE), RSSI_SOURCE_RX_CHANNEL);
+    setRssiDirect(scaleRange(constrain(pwmRssi, PWM_RANGE_MIN, PWM_RANGE_MAX), PWM_RANGE_MIN, PWM_RANGE_MAX, 0, RSSI_MAX_VALUE), RSSI_SOURCE_RX_CHANNEL);
 }
 
 static void updateRSSIADC(timeUs_t currentTimeUs)
@@ -765,11 +780,6 @@ static void updateRSSIADC(timeUs_t currentTimeUs)
 
     const uint16_t adcRssiSample = adcGetChannel(ADC_RSSI);
     uint16_t rssiValue = adcRssiSample / RSSI_ADC_DIVISOR;
-
-    // RSSI_Invert option
-    if (rxConfig()->rssi_invert) {
-        rssiValue = RSSI_MAX_VALUE - rssiValue;
-    }
 
     setRssi(rssiValue, RSSI_SOURCE_ADC);
 #endif
@@ -796,7 +806,14 @@ void updateRSSI(timeUs_t currentTimeUs)
 
 uint16_t getRssi(void)
 {
-    return rxConfig()->rssi_scale / 100.0f * rssi + rxConfig()->rssi_offset * RSSI_OFFSET_SCALING;
+    uint16_t rssiValue = rssi;
+
+    // RSSI_Invert option
+    if (rxConfig()->rssi_invert) {
+        rssiValue = RSSI_MAX_VALUE - rssiValue;
+    }
+
+    return rxConfig()->rssi_scale / 100.0f * rssiValue + rxConfig()->rssi_offset * RSSI_OFFSET_SCALING;
 }
 
 uint8_t getRssiPercent(void)
@@ -804,18 +821,18 @@ uint8_t getRssiPercent(void)
     return scaleRange(getRssi(), 0, RSSI_MAX_VALUE, 0, 100);
 }
 
-uint8_t getRssiDbm(void)
+int16_t getRssiDbm(void)
 {
-    return rssi_dbm;
+    return rssiDbm;
 }
 
 #define RSSI_SAMPLE_COUNT_DBM 16
 
-static uint8_t updateRssiDbmSamples(uint8_t value)
+static int16_t updateRssiDbmSamples(int16_t value)
 {
-    static uint16_t samplesdbm[RSSI_SAMPLE_COUNT_DBM];
+    static int16_t samplesdbm[RSSI_SAMPLE_COUNT_DBM];
     static uint8_t sampledbmIndex = 0;
-    static unsigned sumdbm = 0;
+    static int sumdbm = 0;
 
     sumdbm += value - samplesdbm[sampledbmIndex];
     samplesdbm[sampledbmIndex] = value;
@@ -823,22 +840,22 @@ static uint8_t updateRssiDbmSamples(uint8_t value)
     return sumdbm / RSSI_SAMPLE_COUNT_DBM;
 }
 
-void setRssiDbm(uint8_t rssiDbmValue, rssiSource_e source)
+void setRssiDbm(int16_t rssiDbmValue, rssiSource_e source)
 {
     if (source != rssiSource) {
         return;
     }
 
-    rssi_dbm = updateRssiDbmSamples(rssiDbmValue);
+    rssiDbm = updateRssiDbmSamples(rssiDbmValue);
 }
 
-void setRssiDbmDirect(uint8_t newRssiDbm, rssiSource_e source)
+void setRssiDbmDirect(int16_t newRssiDbm, rssiSource_e source)
 {
     if (source != rssiSource) {
         return;
     }
 
-    rssi_dbm = newRssiDbm;
+    rssiDbm = newRssiDbm;
 }
 
 #ifdef USE_RX_LINK_QUALITY_INFO
@@ -847,9 +864,14 @@ uint16_t rxGetLinkQuality(void)
     return linkQuality;
 }
 
+uint8_t rxGetRfMode(void)
+{
+    return rfMode;
+}
+
 uint16_t rxGetLinkQualityPercent(void)
 {
-    return (linkQualitySource == LQ_SOURCE_RX_PROTOCOL_CRSF) ?  (linkQuality / 3.41) : scaleRange(linkQuality, 0, LINK_QUALITY_MAX_VALUE, 0, 100);
+    return (linkQualitySource == LQ_SOURCE_NONE) ? scaleRange(linkQuality, 0, LINK_QUALITY_MAX_VALUE, 0, 100) : linkQuality;
 }
 #endif
 
@@ -863,21 +885,22 @@ bool isRssiConfigured(void)
     return rssiSource != RSSI_SOURCE_NONE;
 }
 
-bool rxGetFrameDelta(timeDelta_t *deltaUs)
+timeDelta_t rxGetFrameDelta(timeDelta_t *frameAgeUs)
 {
     static timeUs_t previousFrameTimeUs = 0;
-    bool result = false;
+    static timeDelta_t frameTimeDeltaUs = 0;
 
-    *deltaUs = 0;
     if (rxRuntimeState.rcFrameTimeUsFn) {
         const timeUs_t frameTimeUs = rxRuntimeState.rcFrameTimeUsFn();
-        if (frameTimeUs) {
-            if (previousFrameTimeUs) {
-                *deltaUs = cmpTimeUs(frameTimeUs, previousFrameTimeUs);
-                result = true;
-            }
+
+        *frameAgeUs = cmpTimeUs(micros(), frameTimeUs);
+
+        const timeDelta_t deltaUs = cmpTimeUs(frameTimeUs, previousFrameTimeUs);
+        if (deltaUs) {
+            frameTimeDeltaUs = deltaUs;
             previousFrameTimeUs = frameTimeUs;
         }
     }
-    return result;  // No frame delta function available for protocol type or frames have stopped
+
+    return frameTimeDeltaUs;
 }

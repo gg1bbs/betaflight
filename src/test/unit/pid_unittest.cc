@@ -52,9 +52,10 @@ extern "C" {
     #include "fc/rc_controls.h"
     #include "fc/runtime_config.h"
 
-    #include "flight/pid.h"
     #include "flight/imu.h"
     #include "flight/mixer.h"
+    #include "flight/pid.h"
+    #include "flight/pid_init.h"
 
     #include "io/gps.h"
 
@@ -113,7 +114,6 @@ void setDefaultTestSettings(void) {
     pidProfile->dterm_notch_cutoff = 160;
     pidProfile->dterm_filter_type = FILTER_BIQUAD;
     pidProfile->itermWindupPointPercent = 50;
-    pidProfile->vbatPidCompensation = 0;
     pidProfile->pidAtMinThrottle = PID_STABILISATION_ON;
     pidProfile->levelAngleLimit = 55;
     pidProfile->feedForwardTransition = 100;
@@ -143,8 +143,9 @@ void setDefaultTestSettings(void) {
     pidProfile->abs_control_gain = 0,
     pidProfile->launchControlMode = LAUNCH_CONTROL_MODE_NORMAL,
     pidProfile->launchControlGain = 40,
+    pidProfile->level_race_mode = false,
 
-    gyro.targetLooptime = 4000;
+    gyro.targetLooptime = 8000;
 }
 
 timeUs_t currentTestTime(void) {
@@ -294,8 +295,8 @@ TEST(pidControllerTest, testPidLoop) {
     // Simulate Iterm behaviour during mixer saturation
     simulatedMotorMixRange = 1.2f;
     pidController(pidProfile, currentTestTime());
-    EXPECT_NEAR(-23.5, pidData[FD_ROLL].I, calculateTolerance(-23.5));
-    EXPECT_NEAR(19.6, pidData[FD_PITCH].I, calculateTolerance(19.6));
+    EXPECT_NEAR(-31.3, pidData[FD_ROLL].I, calculateTolerance(-31.3));
+    EXPECT_NEAR(29.3, pidData[FD_PITCH].I, calculateTolerance(29.3));
     EXPECT_NEAR(-8.8, pidData[FD_YAW].I, calculateTolerance(-8.8));
     simulatedMotorMixRange = 0;
 
@@ -311,8 +312,8 @@ TEST(pidControllerTest, testPidLoop) {
     EXPECT_FLOAT_EQ(0, pidData[FD_ROLL].P);
     EXPECT_FLOAT_EQ(0, pidData[FD_PITCH].P);
     EXPECT_FLOAT_EQ(0, pidData[FD_YAW].P);
-    EXPECT_NEAR(-23.5, pidData[FD_ROLL].I, calculateTolerance(-23.5));
-    EXPECT_NEAR(19.6, pidData[FD_PITCH].I, calculateTolerance(19.6));
+    EXPECT_NEAR(-31.3, pidData[FD_ROLL].I, calculateTolerance(-31.3));
+    EXPECT_NEAR(29.3, pidData[FD_PITCH].I, calculateTolerance(29.3));
     EXPECT_NEAR(-10.6, pidData[FD_YAW].I, calculateTolerance(-10.6));
     EXPECT_FLOAT_EQ(0, pidData[FD_ROLL].D);
     EXPECT_FLOAT_EQ(0, pidData[FD_PITCH].D);
@@ -416,12 +417,12 @@ TEST(pidControllerTest, testMixerSaturation) {
     simulatedMotorMixRange = 2.0f;
     pidController(pidProfile, currentTestTime());
 
-    // Expect no iterm accumulation
-    EXPECT_FLOAT_EQ(0, pidData[FD_ROLL].I);
-    EXPECT_FLOAT_EQ(0, pidData[FD_PITCH].I);
+    // Expect no iterm accumulation for yaw
+    EXPECT_FLOAT_EQ(150, pidData[FD_ROLL].I);
+    EXPECT_FLOAT_EQ(-150, pidData[FD_PITCH].I);
     EXPECT_FLOAT_EQ(0, pidData[FD_YAW].I);
 
-    // Test itermWindup limit
+    // Test itermWindup limit (note: windup limit now only affects yaw)
     // First store values without exceeding iterm windup limit
     resetTest();
     ENABLE_ARMING_FLAG(ARMED);
@@ -444,8 +445,8 @@ TEST(pidControllerTest, testMixerSaturation) {
     setStickPosition(FD_YAW, 0.1f);
     simulatedMotorMixRange = (pidProfile->itermWindupPointPercent + 1) / 100.0f;
     pidController(pidProfile, currentTestTime());
-    EXPECT_LT(pidData[FD_ROLL].I, rollTestIterm);
-    EXPECT_GE(pidData[FD_PITCH].I, pitchTestIterm);
+    EXPECT_FLOAT_EQ(pidData[FD_ROLL].I, rollTestIterm);
+    EXPECT_FLOAT_EQ(pidData[FD_PITCH].I, pitchTestIterm);
     EXPECT_LT(pidData[FD_YAW].I, yawTestIterm);
 }
 
@@ -541,9 +542,9 @@ TEST(pidControllerTest, testItermRelax) {
     EXPECT_NEAR(-8.16, itermErrorRate, calculateTolerance(-8.16));
     currentPidSetpoint += ITERM_RELAX_SETPOINT_THRESHOLD;
     applyItermRelax(FD_PITCH, pidData[FD_PITCH].I, gyroRate, &itermErrorRate, &currentPidSetpoint);
-    EXPECT_NEAR(-2.69, itermErrorRate, calculateTolerance(-2.69));
+    EXPECT_NEAR(0, itermErrorRate, calculateTolerance(0));
     applyItermRelax(FD_PITCH, pidData[FD_PITCH].I, gyroRate, &itermErrorRate, &currentPidSetpoint);
-    EXPECT_NEAR(-0.84, itermErrorRate, calculateTolerance(-0.84));
+    EXPECT_NEAR(0, itermErrorRate, calculateTolerance(0));
 
     pidProfile->iterm_relax_type = ITERM_RELAX_GYRO;
     pidInit(pidProfile);
@@ -587,7 +588,7 @@ TEST(pidControllerTest, testItermRelax) {
     pidProfile->iterm_relax = ITERM_RELAX_RPY;
     pidInit(pidProfile);
     applyItermRelax(FD_YAW, pidData[FD_YAW].I, gyroRate, &itermErrorRate, &currentPidSetpoint);
-    EXPECT_NEAR(-6.46, itermErrorRate, calculateTolerance(-3.6));
+    EXPECT_NEAR(-3.6, itermErrorRate, calculateTolerance(-3.6));
 }
 
 // TODO - Add more tests

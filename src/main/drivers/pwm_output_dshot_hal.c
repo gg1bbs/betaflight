@@ -32,25 +32,18 @@
 
 #include "drivers/dma.h"
 #include "drivers/dma_reqmap.h"
-#include "drivers/motor.h"
 #include "drivers/dshot.h"
 #include "drivers/dshot_dpwm.h"
 #include "drivers/dshot_command.h"
 #include "drivers/io.h"
 #include "drivers/nvic.h"
+#include "drivers/motor.h"
+#include "drivers/pwm_output.h"
+#include "drivers/pwm_output_dshot_shared.h"
 #include "drivers/rcc.h"
 #include "drivers/time.h"
 #include "drivers/timer.h"
 #include "drivers/system.h"
-
-#include "pwm_output.h"
-
-// TODO remove once debugging no longer needed
-#ifdef USE_DSHOT_TELEMETRY
-#include <string.h>
-#endif
-
-#include "pwm_output_dshot_shared.h"
 
 #ifdef USE_DSHOT_TELEMETRY
 
@@ -117,13 +110,24 @@ FAST_CODE static void pwmDshotSetDirectionInput(
     timer->ARR = 0xffffffff;
 
 #ifdef STM32H7
-    IOConfigGPIO(motor->io, GPIO_MODE_OUTPUT_PP);
+    // Configure pin as GPIO output to avoid glitch during timer configuration
+    uint32_t pin = IO_Pin(motor->io);
+    LL_GPIO_SetPinMode(IO_GPIO(motor->io), pin, LL_GPIO_MODE_OUTPUT);
+    LL_GPIO_SetPinSpeed(IO_GPIO(motor->io), pin, LL_GPIO_SPEED_FREQ_LOW); // Needs to be low
+    LL_GPIO_SetPinPull(IO_GPIO(motor->io), pin, LL_GPIO_PULL_NO);
+    LL_GPIO_SetPinOutputType(IO_GPIO(motor->io), pin, LL_GPIO_OUTPUT_PUSHPULL);
 #endif
 
     LL_TIM_IC_Init(timer, motor->llChannel, &motor->icInitStruct);
 
 #ifdef STM32H7
-    IOConfigGPIOAF(motor->io, motor->iocfg, timerHardware->alternateFunction);
+    // Configure pin back to timer
+    LL_GPIO_SetPinMode(IO_GPIO(motor->io), IO_Pin(motor->io), LL_GPIO_MODE_ALTERNATE);
+    if (IO_Pin(motor->io) & 0xFF) {
+        LL_GPIO_SetAFPin_0_7(IO_GPIO(motor->io), IO_Pin(motor->io), timerHardware->alternateFunction);
+    } else {
+        LL_GPIO_SetAFPin_8_15(IO_GPIO(motor->io), IO_Pin(motor->io), timerHardware->alternateFunction);
+    }
 #endif
 
     motor->dmaInitStruct.Direction = LL_DMA_DIRECTION_PERIPH_TO_MEMORY;
@@ -197,7 +201,7 @@ FAST_CODE static void motor_DMA_IRQHandler(dmaChannelDescriptor_t* descriptor)
     }
 }
 
-bool pwmDshotMotorHardwareConfig(const timerHardware_t *timerHardware, uint8_t motorIndex, motorPwmProtocolTypes_e pwmProtocolType, uint8_t output)
+bool pwmDshotMotorHardwareConfig(const timerHardware_t *timerHardware, uint8_t motorIndex, uint8_t reorderedMotorIndex, motorPwmProtocolTypes_e pwmProtocolType, uint8_t output)
 {
 #ifdef USE_DSHOT_TELEMETRY
 #define OCINIT motor->ocInitStruct
@@ -334,35 +338,41 @@ bool pwmDshotMotorHardwareConfig(const timerHardware_t *timerHardware, uint8_t m
 
         motor->timer->dmaBurstBuffer = &dshotBurstDmaBuffer[timerIndex][0];
 
-#if defined(STM32H7)
+#if defined(STM32H7) || defined(STM32G4)
         DMAINIT.PeriphRequest = dmaChannel;
 #else
         DMAINIT.Channel = dmaChannel;
 #endif
         DMAINIT.MemoryOrM2MDstAddress = (uint32_t)motor->timer->dmaBurstBuffer;
+#ifndef STM32G4
         DMAINIT.FIFOThreshold = LL_DMA_FIFOTHRESHOLD_FULL;
+#endif
         DMAINIT.PeriphOrM2MSrcAddress = (uint32_t)&timerHardware->tim->DMAR;
     } else
 #endif
     {
-        dmaInit(dmaGetIdentifier(dmaRef), OWNER_MOTOR, RESOURCE_INDEX(motorIndex));
+        dmaInit(dmaGetIdentifier(dmaRef), OWNER_MOTOR, RESOURCE_INDEX(reorderedMotorIndex));
 
         motor->dmaBuffer = &dshotDmaBuffer[motorIndex][0];
 
-#if defined(STM32H7)
+#if defined(STM32H7) || defined(STM32G4)
         DMAINIT.PeriphRequest = dmaChannel;
 #else
         DMAINIT.Channel = dmaChannel;
 #endif
         DMAINIT.MemoryOrM2MDstAddress = (uint32_t)motor->dmaBuffer;
+#ifndef STM32G4
         DMAINIT.FIFOThreshold = LL_DMA_FIFOTHRESHOLD_1_4;
+#endif
         DMAINIT.PeriphOrM2MSrcAddress = (uint32_t)timerChCCR(timerHardware);
     }
 
     DMAINIT.Direction = LL_DMA_DIRECTION_MEMORY_TO_PERIPH;
+#ifndef STM32G4
     DMAINIT.FIFOMode = LL_DMA_FIFOMODE_ENABLE;
     DMAINIT.MemBurst = LL_DMA_MBURST_SINGLE;
     DMAINIT.PeriphBurst = LL_DMA_PBURST_SINGLE;
+#endif
     DMAINIT.NbData = pwmProtocolType == PWM_TYPE_PROSHOT1000 ? PROSHOT_DMA_BUFFER_SIZE : DSHOT_DMA_BUFFER_SIZE;
     DMAINIT.PeriphOrM2MSrcIncMode = LL_DMA_PERIPH_NOINCREMENT;
     DMAINIT.MemoryOrM2MDstIncMode = LL_DMA_MEMORY_INCREMENT;

@@ -31,7 +31,8 @@
 
 #define PWM_RANGE_MIN 1000
 #define PWM_RANGE_MAX 2000
-#define PWM_RANGE_MIDDLE (PWM_RANGE_MIN + ((PWM_RANGE_MAX - PWM_RANGE_MIN) / 2))
+#define PWM_RANGE (PWM_RANGE_MAX - PWM_RANGE_MIN)
+#define PWM_RANGE_MIDDLE (PWM_RANGE_MIN + (PWM_RANGE / 2))
 
 #define PWM_PULSE_MIN   750       // minimum PWM pulse width which is considered valid
 #define PWM_PULSE_MAX   2250      // maximum PWM pulse width which is considered valid
@@ -67,6 +68,7 @@ typedef enum {
     SERIALRX_TARGET_CUSTOM = 11,
     SERIALRX_FPORT = 12,
     SERIALRX_SRXL2 = 13,
+    SERIALRX_GHST = 14
 } SerialRXType;
 
 #define MAX_SUPPORTED_RC_PPM_CHANNEL_COUNT          12
@@ -125,7 +127,7 @@ struct rxRuntimeState_s;
 typedef uint16_t (*rcReadRawDataFnPtr)(const struct rxRuntimeState_s *rxRuntimeState, uint8_t chan); // used by receiver driver to return channel data
 typedef uint8_t (*rcFrameStatusFnPtr)(struct rxRuntimeState_s *rxRuntimeState);
 typedef bool (*rcProcessFrameFnPtr)(const struct rxRuntimeState_s *rxRuntimeState);
-typedef timeUs_t (*rcGetFrameTimeUsFnPtr)(void);  // used to retrieve the timestamp in microseconds for the last channel data frame
+typedef timeUs_t rcGetFrameTimeUsFn(void);  // used to retrieve the timestamp in microseconds for the last channel data frame
 
 typedef enum {
     RX_PROVIDER_NONE = 0,
@@ -144,7 +146,7 @@ typedef struct rxRuntimeState_s {
     rcReadRawDataFnPtr  rcReadRawFn;
     rcFrameStatusFnPtr  rcFrameStatusFn;
     rcProcessFrameFnPtr rcProcessFrameFn;
-    rcGetFrameTimeUsFnPtr rcFrameTimeUsFn;
+    rcGetFrameTimeUsFn *rcFrameTimeUsFn;
     uint16_t            *channelData;
     void                *frameData;
 } rxRuntimeState_t;
@@ -164,6 +166,7 @@ extern rssiSource_e rssiSource;
 typedef enum {
     LQ_SOURCE_NONE = 0,
     LQ_SOURCE_RX_PROTOCOL_CRSF,
+    LQ_SOURCE_RX_PROTOCOL_GHST,
 } linkQualitySource_e;
 
 extern linkQualitySource_e linkQualitySource;
@@ -196,9 +199,12 @@ uint16_t rxGetLinkQuality(void);
 void setLinkQualityDirect(uint16_t linkqualityValue);
 uint16_t rxGetLinkQualityPercent(void);
 
-uint8_t getRssiDbm(void);
-void setRssiDbm(uint8_t newRssiDbm, rssiSource_e source);
-void setRssiDbmDirect(uint8_t newRssiDbm, rssiSource_e source);
+int16_t getRssiDbm(void);
+void setRssiDbm(int16_t newRssiDbm, rssiSource_e source);
+void setRssiDbmDirect(int16_t newRssiDbm, rssiSource_e source);
+
+void rxSetRfMode(uint8_t rfModeValue);
+uint8_t rxGetRfMode(void);
 
 void resetAllRxChannelRangeConfigurations(rxChannelRangeConfig_t *rxChannelRangeConfig);
 
@@ -207,4 +213,4 @@ void resumeRxPwmPpmSignal(void);
 
 uint16_t rxGetRefreshRate(void);
 
-bool rxGetFrameDelta(timeDelta_t *deltaUs);
+timeDelta_t rxGetFrameDelta(timeDelta_t *frameAgeUs);

@@ -73,8 +73,6 @@ extern "C" {
     int32_t GPS_coord[2];
     gpsSolutionData_t gpsSol;
     float motor[8];
-    float motorOutputHigh = 2047;
-    float motorOutputLow = 1000;
     acc_t acc;
     float accAverage[XYZ_AXIS_COUNT];
 
@@ -89,7 +87,6 @@ extern "C" {
 
     void osdRefresh(timeUs_t currentTimeUs);
     uint16_t updateLinkQualitySamples(uint16_t value);
-    uint16_t scaleCrsfLq(uint16_t lqvalue);
 #define LINK_QUALITY_SAMPLE_COUNT 16
 }
 
@@ -311,16 +308,19 @@ TEST(LQTest, TestElementLQ_PROTOCOL_CRSF_VALUES)
 
     // crsf setLinkQualityDirect 0-300;
 
-    for (uint16_t x = 0; x <= 300; x++) {
-        // when x scaled
-        setLinkQualityDirect(scaleCrsfLq(x));
-        // then rxGetLinkQuality Osd should be x
-        displayClearScreen(&testDisplayPort);
-        osdRefresh(simulationTime);
-        displayPortTestBufferSubstring(8, 1,"%c%3d", SYM_LINK_QUALITY, x);
-
+    for (uint8_t x = 0; x <= 99; x++) {
+        for (uint8_t m = 0; m <= 4; m++) {
+            // when x scaled
+            setLinkQualityDirect(x);
+            rxSetRfMode(m);
+            // then rxGetLinkQuality Osd should be x
+            // and RfMode should be m
+            displayClearScreen(&testDisplayPort);
+            osdRefresh(simulationTime);
+                displayPortTestBufferSubstring(8, 1, "%c%1d:%2d", SYM_LINK_QUALITY, m, x);
+            }
+        }
     }
-}
 /*
  * Tests the LQ Alarms
  *
@@ -348,7 +348,7 @@ TEST(LQTest, TestLQAlarm)
 
     // and
     // using the metric unit system
-    osdConfigMutable()->units = OSD_UNIT_METRIC;
+    osdConfigMutable()->units = UNIT_METRIC;
 
     // when
     // the craft is armed
@@ -454,6 +454,7 @@ extern "C" {
     void resetPPMDataReceivedState(void){ }
     void failsafeOnValidDataReceived(void) { }
     void failsafeOnValidDataFailed(void) { }
+    void pinioBoxTaskControl(void) { }
 
     void rxPwmInit(rxRuntimeState_t *rxRuntimeState, rcReadRawDataFnPtr *callback)
     {
@@ -548,4 +549,8 @@ extern "C" {
     }
 
     bool isUpright(void) { return true; }
+
+    float getMotorOutputLow(void) { return 1000.0; }
+
+    float getMotorOutputHigh(void) { return 2047.0; }
 }

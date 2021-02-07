@@ -72,11 +72,10 @@ extern "C" {
 static int32_t amperage = 100;
 static int32_t estimatedVario = 0;
 static uint8_t batteryRemaining = 0;
-static uint16_t avgCellVoltage = vbat/testBatteryCellCount;
 static throttleStatus_e throttleStatus = THROTTLE_HIGH;
 static uint32_t definedFeatures = 0;
 static uint32_t definedSensors = SENSOR_GYRO | SENSOR_ACC | SENSOR_MAG | SENSOR_SONAR | SENSOR_GPS | SENSOR_GPSMAG;
-
+static uint16_t testBatteryVoltage = 1000;
 
 int32_t getAmperage(void)
 {
@@ -95,7 +94,7 @@ uint8_t calculateBatteryPercentageRemaining(void)
 
 uint16_t getBatteryAverageCellVoltage(void)
 {
-    return avgCellVoltage;
+    return testBatteryVoltage / testBatteryCellCount;
 }
 
 int32_t getMAhDrawn(void)
@@ -128,7 +127,6 @@ typedef struct serialPortStub_s {
 } serialPortStub_t;
 
 
-static uint16_t testBatteryVoltage = 1000;
 uint16_t getBatteryVoltage(void)
 {
     return testBatteryVoltage;
@@ -154,10 +152,10 @@ static bool portIsShared = false;
 static bool openSerial_called = false;
 static bool telemetryDetermineEnabledState_stub_retval;
 
-void rescheduleTask(cfTaskId_e taskId, uint32_t newPeriodMicros)
+void rescheduleTask(taskId_e taskId, timeDelta_t newPeriodUs)
 {
     EXPECT_EQ(TASK_TELEMETRY, taskId);
-    EXPECT_EQ(1000, newPeriodMicros);
+    EXPECT_EQ(1000, newPeriodUs);
 }
 
 

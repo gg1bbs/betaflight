@@ -83,10 +83,7 @@ include $(ROOT)/make/system-id.mk
 include $(ROOT)/make/checks.mk
 
 # configure some directories that are relative to wherever ROOT_DIR is located
-ifndef TOOLS_DIR
-TOOLS_DIR := $(ROOT)/tools
-endif
-BUILD_DIR := $(ROOT)/build
+TOOLS_DIR ?= $(ROOT)/tools
 DL_DIR    := $(ROOT)/downloads
 
 export RM := rm
@@ -108,7 +105,7 @@ FEATURE_CUT_LEVEL_SUPPLIED := $(FEATURE_CUT_LEVEL)
 FEATURE_CUT_LEVEL =
 
 # The list of targets to build for 'pre-push'
-PRE_PUSH_TARGET_LIST ?= OMNIBUSF4 STM32F405 SPRACINGF7DUAL STM32F7X2 NUCLEOH743 SITL test-representative
+PRE_PUSH_TARGET_LIST ?= STM32F405 STM32F411 STM32F7X2 STM32F745 NUCLEOH743 SITL STM32F4DISCOVERY_DEBUG test-representative
 
 include $(ROOT)/make/targets.mk
 
@@ -307,7 +304,6 @@ TARGET_BASENAME = $(BIN_DIR)/$(FORKNAME)_$(FC_VER)_$(TARGET)_$(REVISION)
 #
 # Things we will build
 #
-TARGET_S19      = $(TARGET_BASENAME).s19
 TARGET_BIN      = $(TARGET_BASENAME).bin
 TARGET_HEX      = $(TARGET_BASENAME).hex
 TARGET_DFU      = $(TARGET_BASENAME).dfu
@@ -337,11 +333,6 @@ $(OBJECT_DIR)/$(TARGET)/build/version.o : $(SRC)
 $(TARGET_LST): $(TARGET_ELF)
 	$(V0) $(OBJDUMP) -S --disassemble $< > $@
 
-
-$(TARGET_S19): $(TARGET_ELF)
-	@echo "Creating srec/S19 $(TARGET_S19)" "$(STDOUT)"
-	$(V1) $(OBJCOPY) --output-target=srec $(TARGET_S19)
-
 ifeq ($(EXST),no)
 $(TARGET_BIN): $(TARGET_ELF)
 	@echo "Creating BIN $(TARGET_BIN)" "$(STDOUT)"
@@ -353,7 +344,7 @@ $(TARGET_HEX): $(TARGET_ELF)
 
 $(TARGET_DFU): $(TARGET_HEX)
 	@echo "Creating DFU $(TARGET_DFU)" "$(STDOUT)"
-	$(V1) $(DFUSE-PACK) -i $< $@
+	$(V1) $(PYTHON) $(DFUSE-PACK) -i $< $@
 
 else
 CLEAN_ARTIFACTS += $(TARGET_UNPATCHED_BIN) $(TARGET_EXST_HASH_SECTION_FILE) $(TARGET_EXST_ELF)
@@ -460,7 +451,7 @@ all_all: $(VALID_TARGETS)
 unified: $(UNIFIED_TARGETS)
 
 ## unified_zip : build all Unified Targets as zip files (for posting on GitHub)
-unified_zip: $(addsuffix _zip,$(UNIFIED_TARGETS))
+unified_zip: $(addsuffix _clean,$(UNIFIED_TARGETS)) $(addsuffix _zip,$(UNIFIED_TARGETS))
 
 ## legacy : Build legacy targets
 legacy: $(LEGACY_TARGETS)
@@ -478,16 +469,7 @@ targets-group-1: $(GROUP_1_TARGETS)
 ## targets-group-2   : build some targets
 targets-group-2: $(GROUP_2_TARGETS)
 
-## targets-group-3   : build some targets
-targets-group-3: $(GROUP_3_TARGETS)
-
-## targets-group-4   : build some targets
-targets-group-4: $(GROUP_4_TARGETS)
-
-## targets-group-5   : build some targets
-targets-group-5: $(GROUP_5_TARGETS)
-
-## targets-group-rest: build the rest of the targets (not listed in group 1, 2 or 3)
+## targets-group-rest: build the rest of the targets (not listed in the other groups)
 targets-group-rest: $(GROUP_OTHER_TARGETS)
 
 $(VALID_TARGETS):
@@ -572,9 +554,6 @@ zip:
 binary:
 	$(V0) $(MAKE) -j $(TARGET_BIN)
 
-srec:
-	$(V0) $(MAKE) -j $(TARGET_S19)
-
 hex:
 	$(V0) $(MAKE) -j $(TARGET_HEX)
 
@@ -597,9 +576,6 @@ $(DL_DIR):
 	mkdir -p $@
 
 $(TOOLS_DIR):
-	mkdir -p $@
-
-$(BUILD_DIR):
 	mkdir -p $@
 
 ## version           : print firmware version
@@ -631,16 +607,10 @@ targets:
 	@echo "Base target:         $(BASE_TARGET)"
 	@echo "targets-group-1:     $(GROUP_1_TARGETS)"
 	@echo "targets-group-2:     $(GROUP_2_TARGETS)"
-	@echo "targets-group-3:     $(GROUP_3_TARGETS)"
-	@echo "targets-group-4:     $(GROUP_4_TARGETS)"
-	@echo "targets-group-5:     $(GROUP_5_TARGETS)"
 	@echo "targets-group-rest:  $(GROUP_OTHER_TARGETS)"
 
 	@echo "targets-group-1:     $(words $(GROUP_1_TARGETS)) targets"
 	@echo "targets-group-2:     $(words $(GROUP_2_TARGETS)) targets"
-	@echo "targets-group-3:     $(words $(GROUP_3_TARGETS)) targets"
-	@echo "targets-group-4:     $(words $(GROUP_4_TARGETS)) targets"
-	@echo "targets-group-5:     $(words $(GROUP_5_TARGETS)) targets"
 	@echo "targets-group-rest:  $(words $(GROUP_OTHER_TARGETS)) targets"
 	@echo "total in all groups  $(words $(CI_TARGETS)) targets"
 
@@ -704,6 +674,10 @@ test junittest test-all test-representative:
 ## test_help         : print the help message for the test suite (including a list of the available tests)
 test_help:
 	$(V0) cd src/test && $(MAKE) help
+
+## test_versions         : print the compiler versions used for the test suite
+test_versions:
+	$(V0) cd src/test && $(MAKE) versions
 
 ## test_%            : run test 'test_%' from the test suite
 test_%:

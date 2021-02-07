@@ -29,14 +29,6 @@
 #define MAX7456_CLOCK_CONFIG_DEFAULT    MAX7456_CLOCK_CONFIG_OC
 #endif
 
-#ifndef MAX7456_SPI_CLK
-#define MAX7456_SPI_CLK                 (SPI_CLOCK_STANDARD)
-#endif
-
-#ifndef MAX7456_RESTORE_CLK
-#define MAX7456_RESTORE_CLK             (SPI_CLOCK_FAST)
-#endif
-
 #ifndef MAX7456_SPI_CS_PIN
 #define MAX7456_SPI_CS_PIN              NONE
 #endif
@@ -525,8 +517,8 @@
 #if !defined(ADC4_DMA_OPT)
 #define ADC4_DMA_OPT (DMA_OPT_UNUSED)
 #endif
-#if !defined(ADC4_DMA_OPT)
-#define ADC4_DMA_OPT (-1)
+#if !defined(ADC5_DMA_OPT)
+#define ADC5_DMA_OPT (DMA_OPT_UNUSED)
 #endif
 
 #endif // USE_ADC
@@ -638,6 +630,15 @@
 #endif
 #endif
 
+#ifdef USE_UART9
+#ifndef UART9_TX_DMA_OPT
+#define UART9_TX_DMA_OPT (DMA_OPT_UNUSED)
+#endif
+#ifndef UART9_RX_DMA_OPT
+#define UART9_RX_DMA_OPT (DMA_OPT_UNUSED)
+#endif
+#endif
+
 #ifndef RTC6705_CS_PIN
 #define RTC6705_CS_PIN NONE
 #endif
@@ -677,8 +678,3 @@
 #define DSHOT_BITBANGED_TIMER_DEFAULT DSHOT_BITBANGED_TIMER_AUTO
 #endif
 #endif // USE_DSHOT_BITBANG
-
-// XXX Tentative; may be removed
-#if defined(USE_MSP_DISPLAYPORT) && defined(USE_OSD_OVER_MSP_DISPLAYPORT)
-//#define USE_DISPLAYPORT_MSP_VENDOR_SPECIFIC
-#endif

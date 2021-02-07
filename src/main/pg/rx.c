@@ -72,6 +72,8 @@ void pgResetFn_rxConfig(rxConfig_t *rxConfig)
         .srxl2_unit_id = 1,
         .srxl2_baud_fast = true,
         .sbus_baud_fast = false,
+        .crsf_use_rx_snr = false,
+        .msp_override_channels_mask = 0,
     );
 
 #ifdef RX_CHANNELS_TAER

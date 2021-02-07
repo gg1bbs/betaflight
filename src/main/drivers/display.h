@@ -41,6 +41,13 @@ typedef enum {
     DISPLAY_TRANSACTION_OPT_RESET_DRAWING = 1 << 1,
 } displayTransactionOption_e;
 
+typedef enum {
+    DISPLAY_BACKGROUND_TRANSPARENT,
+    DISPLAY_BACKGROUND_BLACK,
+    DISPLAY_BACKGROUND_GRAY,
+    DISPLAY_BACKGROUND_LTGRAY,
+    DISPLAY_BACKGROUND_COUNT    // must be the last entry
+} displayPortBackground_e;
 
 struct displayCanvas_s;
 struct osdCharacter_s;
@@ -74,17 +81,18 @@ typedef struct displayPortVTable_s {
     int (*writeChar)(displayPort_t *displayPort, uint8_t x, uint8_t y, uint8_t attr, uint8_t c);
     bool (*isTransferInProgress)(const displayPort_t *displayPort);
     int (*heartbeat)(displayPort_t *displayPort);
-    void (*resync)(displayPort_t *displayPort);
+    void (*redraw)(displayPort_t *displayPort);
     bool (*isSynced)(const displayPort_t *displayPort);
     uint32_t (*txBytesFree)(const displayPort_t *displayPort);
     bool (*layerSupported)(displayPort_t *displayPort, displayPortLayer_e layer);
     bool (*layerSelect)(displayPort_t *displayPort, displayPortLayer_e layer);
     bool (*layerCopy)(displayPort_t *displayPort, displayPortLayer_e destLayer, displayPortLayer_e sourceLayer);
     bool (*writeFontCharacter)(displayPort_t *instance, uint16_t addr, const struct osdCharacter_s *chr);
-    bool (*isReady)(displayPort_t *displayPort);
+    bool (*checkReady)(displayPort_t *displayPort, bool rescan);
     void (*beginTransaction)(displayPort_t *displayPort, displayTransactionOption_e opts);
     void (*commitTransaction)(displayPort_t *displayPort);
     bool (*getCanvas)(struct displayCanvas_s *canvas, const displayPort_t *displayPort);
+    void (*setBackgroundType)(displayPort_t *displayPort, displayPortBackground_e backgroundType);
 } displayPortVTable_t;
 
 void displayGrab(displayPort_t *instance);
@@ -99,11 +107,11 @@ int displayWrite(displayPort_t *instance, uint8_t x, uint8_t y, uint8_t attr, co
 int displayWriteChar(displayPort_t *instance, uint8_t x, uint8_t y, uint8_t attr, uint8_t c);
 bool displayIsTransferInProgress(const displayPort_t *instance);
 void displayHeartbeat(displayPort_t *instance);
-void displayResync(displayPort_t *instance);
+void displayRedraw(displayPort_t *instance);
 bool displayIsSynced(const displayPort_t *instance);
 uint16_t displayTxBytesFree(const displayPort_t *instance);
 bool displayWriteFontCharacter(displayPort_t *instance, uint16_t addr, const struct osdCharacter_s *chr);
-bool displayIsReady(displayPort_t *instance);
+bool displayCheckReady(displayPort_t *instance, bool rescan);
 void displayBeginTransaction(displayPort_t *instance, displayTransactionOption_e opts);
 void displayCommitTransaction(displayPort_t *instance);
 bool displayGetCanvas(struct displayCanvas_s *canvas, const displayPort_t *instance);
@@ -111,4 +119,4 @@ void displayInit(displayPort_t *instance, const displayPortVTable_t *vTable);
 bool displayLayerSupported(displayPort_t *instance, displayPortLayer_e layer);
 bool displayLayerSelect(displayPort_t *instance, displayPortLayer_e layer);
 bool displayLayerCopy(displayPort_t *instance, displayPortLayer_e destLayer, displayPortLayer_e sourceLayer);
-
+void displaySetBackgroundType(displayPort_t *instance, displayPortBackground_e backgroundType);

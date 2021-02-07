@@ -49,10 +49,12 @@
 #include "common/printf.h"
 #include "common/typeconversion.h"
 #include "common/utils.h"
+#include "common/unit.h"
 
 #include "config/feature.h"
 
 #include "drivers/display.h"
+#include "drivers/dshot.h"
 #include "drivers/flash.h"
 #include "drivers/osd_symbols.h"
 #include "drivers/sdcard.h"
@@ -66,6 +68,7 @@
 #include "flight/gyroanalyse.h"
 #endif
 #include "flight/imu.h"
+#include "flight/mixer.h"
 #include "flight/position.h"
 
 #include "io/asyncfatfs/asyncfatfs.h"
@@ -76,10 +79,12 @@
 #include "osd/osd.h"
 #include "osd/osd_elements.h"
 
+#include "pg/motor.h"
 #include "pg/pg.h"
 #include "pg/pg_ids.h"
 #include "pg/stats.h"
 
+#include "rx/crsf.h"
 #include "rx/rx.h"
 
 #include "sensors/acceleration.h"
@@ -126,7 +131,7 @@ static uint8_t armState;
 static uint8_t osdProfile = 1;
 #endif
 static displayPort_t *osdDisplayPort;
-static osdDisplayPortDevice_e osdDisplayPortDevice;
+static osdDisplayPortDevice_e osdDisplayPortDeviceType;
 static bool osdIsReady;
 
 static bool suppressStatsDisplay = false;
@@ -140,7 +145,7 @@ escSensorData_t *osdEscDataCombined;
 
 STATIC_ASSERT(OSD_POS_MAX == OSD_POS(31,31), OSD_POS_MAX_incorrect);
 
-PG_REGISTER_WITH_RESET_FN(osdConfig_t, osdConfig, PG_OSD_CONFIG, 7);
+PG_REGISTER_WITH_RESET_FN(osdConfig_t, osdConfig, PG_OSD_CONFIG, 9);
 
 PG_REGISTER_WITH_RESET_FN(osdElementConfig_t, osdElementConfig, PG_OSD_ELEMENT_CONFIG, 0);
 
@@ -245,7 +250,7 @@ void osdAnalyzeActiveElements(void)
     osdDrawActiveElementsBackground(osdDisplayPort);
 }
 
-static void osdDrawElements(timeUs_t currentTimeUs)
+static void osdDrawElements(void)
 {
     // Hide OSD when OSDSW mode is active
     if (IS_RC_MODE_ACTIVE(BOXOSD)) {
@@ -263,7 +268,7 @@ static void osdDrawElements(timeUs_t currentTimeUs)
         displayClearScreen(osdDisplayPort);
     }
 
-    osdDrawActiveElements(osdDisplayPort, currentTimeUs);
+    osdDrawActiveElements(osdDisplayPort);
 }
 
 const uint16_t osdTimerDefault[OSD_TIMER_COUNT] = {
@@ -284,7 +289,7 @@ void pgResetFn_osdConfig(osdConfig_t *osdConfig)
     osdStatSetState(OSD_STAT_BLACKBOX_NUMBER, true);
     osdStatSetState(OSD_STAT_TIMER_2, true);
 
-    osdConfig->units = OSD_UNIT_METRIC;
+    osdConfig->units = UNIT_METRIC;
 
     // Enable all warnings by default
     for (int i=0; i < OSD_WARNING_COUNT; i++) {
@@ -294,6 +299,8 @@ void pgResetFn_osdConfig(osdConfig_t *osdConfig)
     osdWarnSetState(OSD_WARNING_RSSI, false);
     osdWarnSetState(OSD_WARNING_LINK_QUALITY, false);
     osdWarnSetState(OSD_WARNING_RSSI_DBM, false);
+    // turn off the over mah capacity warning
+    osdWarnSetState(OSD_WARNING_OVER_CAP, false);
 
     osdConfig->timers[OSD_TIMER_1] = osdTimerDefault[OSD_TIMER_1];
     osdConfig->timers[OSD_TIMER_2] = osdTimerDefault[OSD_TIMER_2];
@@ -317,7 +324,7 @@ void pgResetFn_osdConfig(osdConfig_t *osdConfig)
     for (int i=0; i < OSD_PROFILE_COUNT; i++) {
         osdConfig->profile[i][0] = '\0';
     }
-    osdConfig->rssi_dbm_alarm = 60;
+    osdConfig->rssi_dbm_alarm = -60;
     osdConfig->gps_sats_show_hdop = false;
 
     for (int i = 0; i < OSD_RCCHANNELS_COUNT; i++) {
@@ -332,6 +339,9 @@ void pgResetFn_osdConfig(osdConfig_t *osdConfig)
 
     osdConfig->camera_frame_width = 24;
     osdConfig->camera_frame_height = 11;
+
+    osdConfig->task_frequency = OSD_TASK_FREQUENCY_DEFAULT;
+    osdConfig->cms_background_type = DISPLAY_BACKGROUND_TRANSPARENT;
 }
 
 void pgResetFn_osdElementConfig(osdElementConfig_t *osdElementConfig)
@@ -409,26 +419,22 @@ static void osdCompleteInitialization(void)
     osdIsReady = true;
 }
 
-void osdInit(displayPort_t *osdDisplayPortToUse, osdDisplayPortDevice_e displayPortDeviceToUse)
+void osdInit(displayPort_t *osdDisplayPortToUse, osdDisplayPortDevice_e displayPortDeviceType)
 {
+    osdDisplayPortDeviceType = displayPortDeviceType;
+
     if (!osdDisplayPortToUse) {
         return;
     }
 
     osdDisplayPort = osdDisplayPortToUse;
-    osdDisplayPortDevice = displayPortDeviceToUse;
 #ifdef USE_CMS
     cmsDisplayPortRegister(osdDisplayPort);
 #endif
 
-    if (displayIsReady(osdDisplayPort)) {
+    if (displayCheckReady(osdDisplayPort, true)) {
         osdCompleteInitialization();
     }
-}
-
-bool osdInitialized(void)
-{
-    return osdDisplayPort;
 }
 
 static void osdResetStats(void)
@@ -444,9 +450,31 @@ static void osdResetStats(void)
     stats.max_g_force  = 0;
     stats.max_esc_temp = 0;
     stats.max_esc_rpm  = 0;
-    stats.min_link_quality =  (linkQualitySource == LQ_SOURCE_RX_PROTOCOL_CRSF) ? 300 : 99; // CRSF  : percent
-    stats.min_rssi_dbm = 0;
+    stats.min_link_quality = (linkQualitySource == LQ_SOURCE_NONE) ? 99 : 100; // percent
+    stats.min_rssi_dbm = CRSF_SNR_MAX;
 }
+
+#if defined(USE_ESC_SENSOR) || defined(USE_DSHOT_TELEMETRY)
+static int32_t getAverageEscRpm(void)
+{
+#ifdef USE_DSHOT_TELEMETRY
+    if (motorConfig()->dev.useDshotTelemetry) {
+        uint32_t rpm = 0;
+        for (int i = 0; i < getMotorCount(); i++) {
+            rpm += getDshotTelemetry(i);
+        }
+        rpm = rpm / getMotorCount();
+        return rpm * 100 * 2 / motorConfig()->motorPoleCount;
+    }
+#endif
+#ifdef USE_ESC_SENSOR
+    if (featureIsEnabled(FEATURE_ESC_SENSOR)) {
+        return calcEscRpm(osdEscDataCombined->rpm);
+    }
+#endif
+    return 0;
+}
+#endif
 
 static void osdUpdateStats(void)
 {
@@ -498,7 +526,7 @@ static void osdUpdateStats(void)
 
 #ifdef USE_RX_RSSI_DBM
     value = getRssiDbm();
-    if (stats.min_rssi_dbm < value) {
+    if (stats.min_rssi_dbm > value) {
         stats.min_rssi_dbm = value;
     }
 #endif
@@ -510,16 +538,20 @@ static void osdUpdateStats(void)
         }
     }
 #endif
+
 #ifdef USE_ESC_SENSOR
     if (featureIsEnabled(FEATURE_ESC_SENSOR)) {
         value = osdEscDataCombined->temperature;
         if (stats.max_esc_temp < value) {
             stats.max_esc_temp = value;
         }
-        value = calcEscRpm(osdEscDataCombined->rpm);
-        if (stats.max_esc_rpm < value) {
-            stats.max_esc_rpm = value;
-        }
+    }
+#endif
+
+#if defined(USE_ESC_SENSOR) || defined(USE_DSHOT_TELEMETRY)
+    int32_t rpm = getAverageEscRpm();
+    if (stats.max_esc_rpm < rpm) {
+        stats.max_esc_rpm = rpm;
     }
 #endif
 }
@@ -726,7 +758,9 @@ static bool osdDisplayStat(int statistic, uint8_t displayRow)
         tfp_sprintf(buff, "%d%c", osdConvertTemperatureToSelectedUnit(stats.max_esc_temp), osdGetTemperatureSymbolForSelectedUnit());
         osdDisplayStatisticLabel(displayRow, "MAX ESC TEMP", buff);
         return true;
+#endif
 
+#if defined(USE_ESC_SENSOR) || defined(USE_DSHOT_TELEMETRY)
     case OSD_STAT_MAX_ESC_RPM:
         itoa(stats.max_esc_rpm, buff, 10);
         osdDisplayStatisticLabel(displayRow, "MAX ESC RPM", buff);
@@ -758,7 +792,7 @@ static bool osdDisplayStat(int statistic, uint8_t displayRow)
 
 #ifdef USE_RX_RSSI_DBM
     case OSD_STAT_MIN_RSSI_DBM:
-        tfp_sprintf(buff, "%3d", stats.min_rssi_dbm * -1);
+        tfp_sprintf(buff, "%3d", stats.min_rssi_dbm);
         osdDisplayStatisticLabel(displayRow, "MIN RSSI DBM", buff);
         return true;
 #endif
@@ -779,7 +813,7 @@ static bool osdDisplayStat(int statistic, uint8_t displayRow)
     case OSD_STAT_TOTAL_DIST:
         #define METERS_PER_KILOMETER 1000
         #define METERS_PER_MILE      1609
-        if (osdConfig()->units == OSD_UNIT_IMPERIAL) {
+        if (osdConfig()->units == UNIT_IMPERIAL) {
             tfp_sprintf(buff, "%d%c", statsConfig()->stats_total_dist_m / METERS_PER_MILE, SYM_MILES);
         } else {
             tfp_sprintf(buff, "%d%c", statsConfig()->stats_total_dist_m / METERS_PER_KILOMETER, SYM_KM);
@@ -858,14 +892,6 @@ STATIC_UNIT_TESTED void osdRefresh(timeUs_t currentTimeUs)
     static bool osdStatsEnabled = false;
     static bool osdStatsVisible = false;
     static timeUs_t osdStatsRefreshTimeUs;
-
-    if (!osdIsReady) {
-        if (!displayIsReady(osdDisplayPort)) {
-            displayResync(osdDisplayPort);
-            return;
-        }
-        osdCompleteInitialization();
-    }
 
     // detect arm/disarm
     if (armState != ARMING_FLAG(ARMED)) {
@@ -957,7 +983,7 @@ STATIC_UNIT_TESTED void osdRefresh(timeUs_t currentTimeUs)
 #endif
     {
         osdUpdateAlarms();
-        osdDrawElements(currentTimeUs);
+        osdDrawElements();
         displayHeartbeat(osdDisplayPort);
     }
     displayCommitTransaction(osdDisplayPort);
@@ -969,6 +995,14 @@ STATIC_UNIT_TESTED void osdRefresh(timeUs_t currentTimeUs)
 void osdUpdate(timeUs_t currentTimeUs)
 {
     static uint32_t counter = 0;
+
+    if (!osdIsReady) {
+        if (!displayCheckReady(osdDisplayPort, false)) {
+            return;
+        }
+
+        osdCompleteInitialization();
+    }
 
     if (isBeeperOn()) {
         showVisualBeeper = true;
@@ -991,18 +1025,22 @@ void osdUpdate(timeUs_t currentTimeUs)
 #endif
 
     // redraw values in buffer
-#ifdef USE_MAX7456
-#define DRAW_FREQ_DENOM 5
-#else
-#define DRAW_FREQ_DENOM 10 // MWOSD @ 115200 baud (
-#endif
-
-    if (counter % DRAW_FREQ_DENOM == 0) {
+    if (counter % OSD_DRAW_FREQ_DENOM == 0) {
         osdRefresh(currentTimeUs);
         showVisualBeeper = false;
     } else {
-        // rest of time redraw screen 10 chars per idle so it doesn't lock the main idle
-        displayDrawScreen(osdDisplayPort);
+        bool doDrawScreen = true;
+#if defined(USE_CMS) && defined(USE_MSP_DISPLAYPORT) && defined(USE_OSD_OVER_MSP_DISPLAYPORT)
+        // For the MSP displayPort device only do the drawScreen once per
+        // logical OSD cycle as there is no output buffering needing to be flushed.
+        if (osdDisplayPortDeviceType == OSD_DISPLAYPORT_DEVICE_MSP) {
+            doDrawScreen = (counter % OSD_DRAW_FREQ_DENOM == 1);
+        }
+#endif
+        // Redraw a portion of the chars per idle to spread out the load and SPI bus utilization
+        if (doDrawScreen) {
+            displayDrawScreen(osdDisplayPort);
+        }
     }
     ++counter;
 }
@@ -1044,10 +1082,10 @@ bool osdNeedsAccelerometer(void)
 }
 #endif // USE_ACC
 
-displayPort_t *osdGetDisplayPort(osdDisplayPortDevice_e *displayPortDevice)
+displayPort_t *osdGetDisplayPort(osdDisplayPortDevice_e *displayPortDeviceType)
 {
-    if (displayPortDevice) {
-        *displayPortDevice = osdDisplayPortDevice;
+    if (displayPortDeviceType) {
+        *displayPortDeviceType = osdDisplayPortDeviceType;
     }
     return osdDisplayPort;
 }
